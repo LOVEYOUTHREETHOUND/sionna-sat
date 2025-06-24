@@ -16,6 +16,18 @@ if gpus:
 
 
 class ChannelMatrix(sionna.phy.Block):
+    """MIMO信道矩阵生成和管理类
+    
+    该类负责生成和更新MIMO系统的信道矩阵,包括时变衰落效应
+    
+    Args:
+        resource_grid: OFDM资源网格配置对象
+        batch_size: 批处理大小
+        num_rx: 接收天线数量
+        num_tx: 发射天线数量
+        coherence_time: 信道相干时间(单位:时隙)
+        precision: 数值精度
+    """
     def __init__(self,
                  resource_grid,
                  batch_size,
@@ -27,10 +39,20 @@ class ChannelMatrix(sionna.phy.Block):
         self.resource_grid = resource_grid
         self.coherence_time = coherence_time
         self.batch_size = batch_size
+        # 初始化衰落相关系数,范围0.95-0.99
         self.rho_fading = sionna.phy.config.tf_rng.uniform([batch_size, num_rx, num_tx], minval=.95, maxval=.99, dtype=self.rdtype)
+        # 初始化衰落系数为1
         self.fading = tf.ones([batch_size, num_rx, num_tx], dtype=self.rdtype)
 
     def call(self, channel_model):
+        """生成OFDM信道响应
+        
+        Args:
+            channel_model: TR38.901信道模型对象
+            
+        Returns:
+            h_freq: 频域信道响应
+        """
         ofdm_channel = sionna.phy.channel.GenerateOFDMChannel(channel_model, self.resource_grid)
 
         h_freq = ofdm_channel(self.batch_size)
@@ -40,22 +62,50 @@ class ChannelMatrix(sionna.phy.Block):
                channel_model,
                h_freq,
                slot):
+        """根据相干时间更新信道响应
+        
+        每个相干时间周期重新生成信道响应
+        
+        Args:
+            channel_model: TR38.901信道模型对象
+            h_freq: 当前频域信道响应
+            slot: 当前时隙索引
+            
+        Returns:
+            h_freq: 更新后的频域信道响应
+        """
         h_freq_new = self.call(channel_model)
+        # 判断是否需要更新信道(基于相干时间)
         change = tf.cast(tf.math.mod(
             slot, self.coherence_time) == 0, self.cdtype)
+        # 在相干时间边界更新信道响应
         h_freq = change * h_freq_new + \
             (tf.cast(1, self.cdtype) - change) * h_freq
         return h_freq
 
     def apply_fading(self,
                      h_freq):
+        """应用时变衰落效应
+        
+        使用自回归过程模拟时变衰落
+        
+        Args:
+            h_freq: 频域信道响应
+            
+        Returns:
+            h_freq_fading: 加入衰落效应后的信道响应
+        """
+        # 更新衰落系数,使用AR-1过程
         self.fading = tf.cast(1, self.rdtype) - self.rho_fading + self.rho_fading * self.fading + \
             sionna.phy.config.tf_rng.uniform(
                 self.fading.shape, minval=-.1, maxval=.1, dtype=self.rdtype
             )
+        # 确保衰落系数非负
         self.fading = tf.maximum(self.fading, tf.cast(0, self.rdtype))
+        # 扩展维度以匹配信道响应
         fading_expand = sionna.phy.utils.insert_dims(self.fading, 1, axis=2)
         fading_expand = sionna.phy.utils.insert_dims(fading_expand, 3, axis=4)
+        # 应用衰落到信道响应
         h_freq_fading = tf.cast(tf.math.sqrt(
             fading_expand), self.cdtype) * h_freq
         return h_freq_fading
@@ -126,11 +176,32 @@ def get_sinr(tx_power,
 def estimate_achievable_rate(sinr_eff_db_last,
                              num_ofdm_sym,
                              num_subcarriers):
-    rate_achievable_est = sionna.phy.utils.log2(tf.cast(1, sinr_eff_db_last.dtype) + sionna.phy.utils.db_to_lin(sinr_eff_db_last))
+    """估计可达速率
+    
+    基于香农公式计算给定SINR下的理论可达速率
+    
+    Args:
+        sinr_eff_db_last: 上一时隙的有效SINR(dB)
+        num_ofdm_sym: OFDM符号数
+        num_subcarriers: 子载波数
+        
+    Returns:
+        rate_achievable_est: 估计的可达速率
+    """
+    # 使用香农公式计算可达速率
+    rate_achievable_est = sionna.phy.utils.log2(
+        tf.cast(1, sinr_eff_db_last.dtype) + 
+        sionna.phy.utils.db_to_lin(sinr_eff_db_last)
+    )
+    # 扩展维度
     rate_achievable_est = sionna.phy.utils.insert_dims(
         rate_achievable_est, 2, axis=-2
     )
-    rate_achievable_est = tf.tile(rate_achievable_est, [1, 1, num_ofdm_sym, num_subcarriers, 1])
+    # 复制到所有资源元素
+    rate_achievable_est = tf.tile(
+        rate_achievable_est, 
+        [1, 1, num_ofdm_sym, num_subcarriers, 1]
+    )
     return rate_achievable_est
 
 
@@ -138,17 +209,33 @@ def init_result_history(batch_size,
                         num_slots,
                         num_bs,
                         num_ut_per_sector):
+    """初始化仿真结果历史记录
+    
+    创建TensorArray存储各项性能指标
+    
+    Args:
+        batch_size: 批处理大小
+        num_slots: 总时隙数
+        num_bs: 基站数量
+        num_ut_per_sector: 每扇区用户数
+        
+    Returns:
+        hist: 包含各项指标的字典
+    """
     hist = {}
-    for key in ['pathloss_serving_cell',
-                'tx_power', 'olla_offset',
-                'sinr_eff', 'pf_metric',
-                'num_decoded_bits', 'mcs_index',
-                'harq', 'num_allocated_re']:
+    # 初始化各项性能指标的存储数组
+    for key in ['pathloss_serving_cell',  # 服务小区路损
+                'tx_power',                # 发射功率
+                'olla_offset',             # OLLA偏移
+                'sinr_eff',                # 有效SINR
+                'pf_metric',               # 比例公平度量
+                'num_decoded_bits',        # 解码比特数
+                'mcs_index',               # MCS索引
+                'harq',                    # HARQ反馈
+                'num_allocated_re']:       # 分配的资源元素数
         hist[key] = tf.TensorArray(
             size=num_slots,
-            element_shape=[batch_size,
-                           num_bs,
-                           num_ut_per_sector],
+            element_shape=[batch_size, num_bs, num_ut_per_sector],
             dtype=tf.float32
         )
     return hist
