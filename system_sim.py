@@ -667,8 +667,12 @@ def main():
     scenario = 'umi'
     num_rings = 1
     num_ut_per_sector = 10
-    max_bs_ut_dist = 80
-    min_bs_ut_dist = 0
+    # 修改小区尺寸参数
+    cell_radius = 22600  # 小区半径为22.60km
+    isd = cell_radius * np.sqrt(3)  # 站间距，根据小区半径计算
+    max_bs_ut_dist = cell_radius  # 最大用户距离设为小区半径
+    min_bs_ut_dist = 0  # 最小用户距离
+    
     carrier_frequency = 3.5e9
     bs_max_power_dbm = 56
     ut_max_power_dbm = 26
@@ -698,16 +702,17 @@ def main():
                                                  )
     # 定义自定义基站位置
     # 使用六边形网格的站间距(ISD)来计算基站位置
-    isd = 200  # 站间距设为200米
-    hex_radius = isd / np.sqrt(3)  # 六边形半径
+    hex_radius = cell_radius  # 六边形半径等于小区半径
+    satellite_height = 500000  # 卫星高度500km
+    
     custom_bs_positions = {
-        0: (0, 0, 10),                    # 中心小区
-        1: (-hex_radius*1.5, hex_radius*np.sqrt(3)/2, 10),  # 左上小区
-        2: (0, hex_radius*np.sqrt(3), 10),                  # 上小区
-        3: (hex_radius*1.5, hex_radius*np.sqrt(3)/2, 10),   # 右上小区
-        4: (hex_radius*1.5, -hex_radius*np.sqrt(3)/2, 10),  # 右下小区
-        5: (0, -hex_radius*np.sqrt(3), 10),                 # 下小区
-        6: (-hex_radius*1.5, -hex_radius*np.sqrt(3)/2, 10)  # 左下小区
+        0: (0, 0, satellite_height),                    # 中心卫星
+        1: (-hex_radius*1.5, hex_radius*np.sqrt(3)/2, satellite_height),  # 左上卫星
+        2: (0, hex_radius*np.sqrt(3), satellite_height),                  # 上卫星
+        3: (hex_radius*1.5, hex_radius*np.sqrt(3)/2, satellite_height),   # 右上卫星
+        4: (hex_radius*1.5, -hex_radius*np.sqrt(3)/2, satellite_height),  # 右下卫星
+        5: (0, -hex_radius*np.sqrt(3), satellite_height),                 # 下卫星
+        6: (-hex_radius*1.5, -hex_radius*np.sqrt(3)/2, satellite_height)  # 左下卫星
     }
     
     sls = SystemLevelSimulator(
@@ -748,25 +753,110 @@ def main():
         print(f"小区 {cell_num} 扇区 {sector_num}: (x={bs_pos[0]:.2f}, y={bs_pos[1]:.2f}, z={bs_pos[2]:.2f})")
 
     # 绘制拓扑图
-    fig = sls.grid.show()
-    ax = fig.get_axes()
-    # 绘制用户位置
-    ax[0].plot(sls.ut_loc[0, :, 0], sls.ut_loc[0, :, 1],
-               'xk', label='User positions')
+    # 创建六边形网格
+    grid = sionna.sys.topology.HexGrid(num_rings=1,
+                                      cell_radius=cell_radius,
+                                      cell_height=satellite_height)
     
-    # 绘制基站位置 - 修改为只绘制每个小区的一个基站位置（因为每个小区的3个扇区共用同一位置）
-    cell_centers = sls.grid.cell_loc.numpy()
-    ax[0].plot(cell_centers[:, 0], cell_centers[:, 1],
-               '^r', markersize=10, label='BS positions')
+    # 获取小区中心位置
+    cell_centers = np.array(list(custom_bs_positions.values()))
     
-    # 添加小区编号标注
+    # 2D视图
+    plt.figure(figsize=(10, 8))
+    
+    # 绘制小区边界
+    for i in range(len(cell_centers)):
+        # 计算六边形顶点
+        corners = []
+        for angle in np.linspace(0, 2*np.pi, 7)[:-1]:  # 6个顶点
+            x = cell_centers[i][0] + cell_radius * np.cos(angle)
+            y = cell_centers[i][1] + cell_radius * np.sin(angle)
+            corners.append([x, y])
+        corners = np.array(corners)
+        
+        # 绘制六边形
+        plt.plot(np.append(corners[:, 0], corners[0, 0]),
+                np.append(corners[:, 1], corners[0, 1]),
+                'b-', label='base cell' if i == 0 else None)
+    
+    # 绘制基站位置
+    plt.scatter(cell_centers[:, 0], cell_centers[:, 1], 
+               c='red', marker='^', s=100, label='BS positions')
+    
+    # 绘制用户位置（如果有）
+    if 'ut_positions' in locals():
+        plt.scatter(ut_positions[:, 0], ut_positions[:, 1],
+                   c='black', marker='x', label='User positions')
+    
+    # 添加小区编号
     for i, center in enumerate(cell_centers):
-        ax[0].annotate(f'Cell {i}', (center[0], center[1]), 
-                      xytext=(5, 5), textcoords='offset points')
+        plt.text(center[0], center[1], f'Cell {i}',
+                horizontalalignment='center', verticalalignment='bottom')
     
-    ax[0].legend()
-    ax[0].grid(True)
-    ax[0].set_title('System Topology with Cell Centers')
+    plt.grid(True)
+    plt.axis('equal')
+    plt.xlabel('X (meters)')
+    plt.ylabel('Y (meters)')
+    plt.title('System Topology with Cell Centers (2D view)')
+    plt.legend()
+    
+    # 3D视图
+    fig_3d = plt.figure(figsize=(12, 10))
+    ax_3d = fig_3d.add_subplot(111, projection='3d')
+    
+    # 绘制用户位置
+    ut_positions = sls.ut_loc[0].numpy()
+    ax_3d.scatter(ut_positions[:, 0]/1000, ut_positions[:, 1]/1000, ut_positions[:, 2]/1000,
+                 c='black', marker='x', label='User positions')
+    
+    # 绘制卫星位置
+    ax_3d.scatter(cell_centers[:, 0]/1000, cell_centers[:, 1]/1000, cell_centers[:, 2]/1000,
+                 c='red', marker='^', s=100, label='Satellite positions')
+    
+    # 为每个卫星添加标签
+    for i, center in enumerate(cell_centers):
+        ax_3d.text(center[0]/1000, center[1]/1000, center[2]/1000, f'Satellite {i}')
+    
+    # 绘制从卫星到地面的投影线
+    for center in cell_centers:
+        ax_3d.plot([center[0]/1000, center[0]/1000], 
+                  [center[1]/1000, center[1]/1000], 
+                  [0, center[2]/1000], 
+                  'r--', alpha=0.3)
+    
+    # 绘制六边形小区的地面投影
+    for i in range(len(cell_centers)):
+        # 计算六边形顶点
+        corners = []
+        for angle in np.linspace(0, 2*np.pi, 7)[:-1]:  # 6个顶点
+            x = cell_centers[i][0] + cell_radius * np.cos(angle)
+            y = cell_centers[i][1] + cell_radius * np.sin(angle)
+            corners.append([x, y])
+        corners = np.array(corners)
+        
+        # 绘制六边形
+        for j in range(6):
+            ax_3d.plot([corners[j][0]/1000, corners[(j+1)%6][0]/1000],
+                      [corners[j][1]/1000, corners[(j+1)%6][1]/1000],
+                      [0, 0], 'b-', alpha=0.5)
+    
+    # 设置坐标轴标签
+    ax_3d.set_xlabel('X (kilometers)')
+    ax_3d.set_ylabel('Y (kilometers)')
+    ax_3d.set_zlabel('Z (kilometers)')
+    
+    # 设置视角
+    ax_3d.view_init(elev=20, azim=45)
+    
+    # 调整Z轴的范围，使卫星和地面用户都能清晰显示
+    z_min = 0
+    z_max = satellite_height/1000 * 1.1  # 略高于卫星高度
+    ax_3d.set_zlim(z_min, z_max)
+    
+    # 设置标题和图例
+    ax_3d.set_title('Satellite System Topology (3D View)')
+    ax_3d.legend()
+    
     plt.show()
 
     num_slots = tf.constant(1000, tf.int32)
