@@ -14,6 +14,8 @@ if gpus:
     except RuntimeError as e:
         print(e)
 
+from topology import gen_custom_hexgrid_topology
+
 
 class ChannelMatrix(sionna.phy.Block):
     """MIMO信道矩阵生成和管理类
@@ -319,6 +321,7 @@ class SystemLevelSimulator(sionna.phy.Block):
                  o2i_model='low',
                  average_street_width=20.0,
                  average_building_height=5.0,
+                 custom_bs_positions=None,
                  precision=None):
         super().__init__(precision=precision)
         assert scenario in ['umi', 'uma', 'rma']
@@ -367,7 +370,7 @@ class SystemLevelSimulator(sionna.phy.Block):
             average_street_width, average_building_height
         )
 
-        self._setup_topology(num_rings, min_bs_ut_dist, max_bs_ut_dist)
+        self._setup_topology(num_rings, min_bs_ut_dist, max_bs_ut_dist, custom_bs_positions)
         self.phy_abs = sionna.sys.PHYAbstraction(precision=self.precision)
         
         self.olla = sionna.sys.OuterLoopLinkAdaptation(
@@ -410,10 +413,10 @@ class SystemLevelSimulator(sionna.phy.Block):
                 **common_params
             )
 
-    def _setup_topology(self, num_rings, min_bs_ut_dist, max_bs_ut_dist):
+    def _setup_topology(self, num_rings, min_bs_ut_dist, max_bs_ut_dist, custom_bs_positions):
         self.ut_loc, self.bs_loc, self.ut_orientations, self.bs_orientations, \
             self.ut_velocities, self.in_state, self.los, self.bs_virtual_loc, self.grid = \
-            sionna.sys.gen_hexgrid_topology(
+            gen_custom_hexgrid_topology(
                 batch_size=self.batch_size,
                 num_rings=num_rings,
                 num_ut_per_sector=self.num_ut_per_sector,
@@ -422,6 +425,7 @@ class SystemLevelSimulator(sionna.phy.Block):
                 scenario=self.scenario,
                 los=True,
                 return_grid=True,
+                custom_bs_positions=custom_bs_positions,
                 precision=self.precision
             )
         self.channel_model.set_topology(
@@ -692,6 +696,20 @@ def main():
                                                  num_tx=num_ut_per_sector,
                                                  num_streams_per_tx=ut_array.num_ant
                                                  )
+    # 定义自定义基站位置
+    # 使用六边形网格的站间距(ISD)来计算基站位置
+    isd = 200  # 站间距设为200米
+    hex_radius = isd / np.sqrt(3)  # 六边形半径
+    custom_bs_positions = {
+        0: (0, 0, 10),                    # 中心小区
+        1: (-hex_radius*1.5, hex_radius*np.sqrt(3)/2, 10),  # 左上小区
+        2: (0, hex_radius*np.sqrt(3), 10),                  # 上小区
+        3: (hex_radius*1.5, hex_radius*np.sqrt(3)/2, 10),   # 右上小区
+        4: (hex_radius*1.5, -hex_radius*np.sqrt(3)/2, 10),  # 右下小区
+        5: (0, -hex_radius*np.sqrt(3), 10),                 # 下小区
+        6: (-hex_radius*1.5, -hex_radius*np.sqrt(3)/2, 10)  # 左下小区
+    }
+    
     sls = SystemLevelSimulator(
         batch_size,
         num_rings,
@@ -710,14 +728,45 @@ def main():
         temperature=294,
         o2i_model='low',
         average_street_width=20.,
-        average_building_height=10.
+        average_building_height=10.,
+        custom_bs_positions=custom_bs_positions,
+        precision=None
     )
 
+    # 打印每个小区的中心位置
+    print("\n小区中心位置:")
+    cell_centers = sls.grid.cell_loc.numpy()
+    for i, center in enumerate(cell_centers):
+        print(f"小区 {i}: (x={center[0]:.2f}, y={center[1]:.2f}, z={center[2]:.2f})")
+
+    # 打印每个扇区的基站位置
+    print("\n扇区基站位置:")
+    bs_locations = sls.bs_loc[0].numpy()  # [0]是因为batch_size=1
+    for i, bs_pos in enumerate(bs_locations):
+        sector_num = i % 3 + 1
+        cell_num = i // 3
+        print(f"小区 {cell_num} 扇区 {sector_num}: (x={bs_pos[0]:.2f}, y={bs_pos[1]:.2f}, z={bs_pos[2]:.2f})")
+
+    # 绘制拓扑图
     fig = sls.grid.show()
     ax = fig.get_axes()
+    # 绘制用户位置
     ax[0].plot(sls.ut_loc[0, :, 0], sls.ut_loc[0, :, 1],
-               'xk', label='user position')
+               'xk', label='User positions')
+    
+    # 绘制基站位置 - 修改为只绘制每个小区的一个基站位置（因为每个小区的3个扇区共用同一位置）
+    cell_centers = sls.grid.cell_loc.numpy()
+    ax[0].plot(cell_centers[:, 0], cell_centers[:, 1],
+               '^r', markersize=10, label='BS positions')
+    
+    # 添加小区编号标注
+    for i, center in enumerate(cell_centers):
+        ax[0].annotate(f'Cell {i}', (center[0], center[1]), 
+                      xytext=(5, 5), textcoords='offset points')
+    
     ax[0].legend()
+    ax[0].grid(True)
+    ax[0].set_title('System Topology with Cell Centers')
     plt.show()
 
     num_slots = tf.constant(1000, tf.int32)
