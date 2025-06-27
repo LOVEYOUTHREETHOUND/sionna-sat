@@ -5,6 +5,8 @@ import sionna.phy
 import numpy as np
 import matplotlib.pyplot as plt
 
+from satellite import Satellite  # 导入卫星场景类
+
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
 gpus = tf.config.list_physical_devices('GPU')
@@ -412,6 +414,17 @@ class SystemLevelSimulator(sionna.phy.Block):
                 average_building_height=average_building_height,
                 **common_params
             )
+        elif scenario == 'satellite':
+            self.channel_model = Satellite(
+                carrier_frequency=carrier_frequency,
+                ut_array=ut_array,
+                bs_array=bs_array,
+                direction=self.direction,
+                beam_type="service",  # 或 "broadcast"
+                height=500000.,  # 500km
+                elevation=90.,   # 90度
+                **common_params
+            )
 
     def _setup_topology(self, num_rings, min_bs_ut_dist, max_bs_ut_dist, custom_bs_positions):
         self.ut_loc, self.bs_loc, self.ut_orientations, self.bs_orientations, \
@@ -663,44 +676,71 @@ def pairplot(dic, keys, suptitle=None, figsize=2.5):
 
 
 def main():
+    # 1、基本场景参数
     direction = 'downlink'
-    scenario = 'umi'
+    # scenario = 'umi'
+    scenario = 'satellite'
+    beam_type = "service"   # 服务波束
+
+    # 2、地面小区参数
     num_rings = 1
     num_ut_per_sector = 10
-    # 修改小区尺寸参数
     cell_radius = 22600  # 小区半径为22.60km
     isd = cell_radius * np.sqrt(3)  # 站间距，根据小区半径计算
     max_bs_ut_dist = cell_radius  # 最大用户距离设为小区半径
     min_bs_ut_dist = 0  # 最小用户距离
+    num_ut_per_sector = 10  # 每波束用户数
     
     carrier_frequency = 3.5e9
-    bs_max_power_dbm = 56
-    ut_max_power_dbm = 26
+
+    # bs_max_power_dbm = 56
+    # ut_max_power_dbm = 26
     coherence_time = 100
     mcs_table_index = 1
     batch_size = 1
-    bs_array = sionna.phy.channel.tr38901.PanelArray(num_rows_per_panel=2,
-                                                     num_cols_per_panel=3,
+
+    # 卫星天线阵列
+    bs_array = sionna.phy.channel.tr38901.PanelArray(num_rows_per_panel=20,
+                                                     num_cols_per_panel=20,
                                                      polarization='dual',
                                                      polarization_type='VH',
                                                      antenna_pattern='38.901',
-                                                     carrier_frequency=carrier_frequency)
+                                                     carrier_frequency=carrier_frequency,
+                                                     element_vertical_spacing=0.5,
+                                                     element_horizontal_spacing=0.5 )      # 半波长间距)
+    # 用户天线
     ut_array = sionna.phy.channel.tr38901.PanelArray(num_rows_per_panel=1,
                                                      num_cols_per_panel=1,
                                                      polarization='single',
                                                      polarization_type='V',
                                                      antenna_pattern='omni',
                                                      carrier_frequency=carrier_frequency)
-    num_ofdm_sym = 1
-    num_subcarriers = 128
-    subcarrier_spacing = 15e3
+    # 功率配置
+    system_bandwidth = 30e6  # 系统带宽30MHz
+    eirp_density = 41.41    # EIRP功率密度(dBW/MHz)
+    # 转换为dBm
+    bs_max_power_dbm = eirp_density + 10*np.log10(system_bandwidth/1e6) + 30
+    ut_max_power_dbm = 26  # 用户终端功率
+
+    # 资源网格配置
+    subcarrier_spacing = 15e3  # 子载波间隔15kHz
+    num_ofdm_sym = 14        # 每时隙14个OFDM符号
+    num_subcarriers = int(system_bandwidth/subcarrier_spacing)  # 子载波数
+    # num_ofdm_sym = 1
+    # num_subcarriers = 128
+    # subcarrier_spacing = 15e3
     resource_grid = sionna.phy.ofdm.ResourceGrid(num_ofdm_symbols=num_ofdm_sym,
                                                  fft_size=num_subcarriers,
                                                  subcarrier_spacing=subcarrier_spacing,
                                                  num_tx=num_ut_per_sector,
                                                  num_streams_per_tx=ut_array.num_ant
                                                  )
-    # 定义自定义基站位置
+    
+    # 时间参数
+    slot_duration = 1e-3  # 时隙持续时间1ms
+    num_slots = 1000  # 仿真时隙数
+
+    # 卫星位置配置
     # 使用六边形网格的站间距(ISD)来计算基站位置
     hex_radius = cell_radius  # 六边形半径等于小区半径
     satellite_height = 500000  # 卫星高度500km
