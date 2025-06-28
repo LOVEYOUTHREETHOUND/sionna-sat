@@ -5,7 +5,6 @@ import sionna.phy
 import numpy as np
 import matplotlib.pyplot as plt
 
-from NTN.tr38811.scenarios.leo import LEO  # Import our new LEO scenario
 from satellite import Satellite  # 导入卫星场景类
 
 import tensorflow as tf
@@ -416,16 +415,12 @@ class SystemLevelSimulator(sionna.phy.Block):
                 **common_params
             )
         elif scenario == 'satellite':
-            # 使用新的LEO场景类
-            self.channel_model = LEO(
-                height=500000.,        # 500km
-                elevation=90.,         # 90度
-                beam_type="service",   # 服务波束
-                enable_atmospheric_loss=True,
-                enable_rain_loss=True,
-                enable_clouds_fog_loss=True,
-                enable_scintillation_loss=True,
-                **common_params
+            # 移除已经在common_params中的参数
+            self.channel_model = Satellite(
+                beam_type="service",  # 服务波束
+                height=500000.,      # 500km
+                elevation=90.,       # 90度
+                **common_params      # 使用解包方式传递共同参数
             )
 
     def _setup_topology(self, num_rings, min_bs_ut_dist, max_bs_ut_dist, custom_bs_positions):
@@ -680,7 +675,8 @@ def pairplot(dic, keys, suptitle=None, figsize=2.5):
 def main():
     # 1、基本场景参数
     direction = 'downlink'
-    scenario = 'satellite'  # 使用卫星场景
+    # scenario = 'umi'
+    scenario = 'satellite'
     beam_type = "service"   # 服务波束
 
     # 2、地面小区参数
@@ -694,32 +690,28 @@ def main():
     
     carrier_frequency = 3.5e9
 
+    # bs_max_power_dbm = 56
+    # ut_max_power_dbm = 26
     coherence_time = 100
     mcs_table_index = 1
     batch_size = 1
 
     # 卫星天线阵列
-    bs_array = sionna.phy.channel.tr38901.PanelArray(
-        num_rows_per_panel=20,
-        num_cols_per_panel=20,
-        polarization='dual',
-        polarization_type='VH',
-        antenna_pattern='38.901',
-        carrier_frequency=carrier_frequency,
-        element_vertical_spacing=0.5,
-        element_horizontal_spacing=0.5
-    )
-
+    bs_array = sionna.phy.channel.tr38901.PanelArray(num_rows_per_panel=20,
+                                                     num_cols_per_panel=20,
+                                                     polarization='dual',
+                                                     polarization_type='VH',
+                                                     antenna_pattern='38.901',
+                                                     carrier_frequency=carrier_frequency,
+                                                     element_vertical_spacing=0.5,
+                                                     element_horizontal_spacing=0.5 )      # 半波长间距)
     # 用户天线
-    ut_array = sionna.phy.channel.tr38901.PanelArray(
-        num_rows_per_panel=1,
-        num_cols_per_panel=1,
-        polarization='single',
-        polarization_type='V',
-        antenna_pattern='omni',
-        carrier_frequency=carrier_frequency
-    )
-
+    ut_array = sionna.phy.channel.tr38901.PanelArray(num_rows_per_panel=1,
+                                                     num_cols_per_panel=1,
+                                                     polarization='single',
+                                                     polarization_type='V',
+                                                     antenna_pattern='omni',
+                                                     carrier_frequency=carrier_frequency)
     # 功率配置
     system_bandwidth = 30e6  # 系统带宽30MHz
     eirp_density = 41.41    # EIRP功率密度(dBW/MHz)
@@ -731,19 +723,22 @@ def main():
     subcarrier_spacing = 15e3  # 子载波间隔15kHz
     num_ofdm_sym = 14        # 每时隙14个OFDM符号
     num_subcarriers = int(system_bandwidth/subcarrier_spacing)  # 子载波数
-    resource_grid = sionna.phy.ofdm.ResourceGrid(
-        num_ofdm_symbols=num_ofdm_sym,
-        fft_size=num_subcarriers,
-        subcarrier_spacing=subcarrier_spacing,
-        num_tx=num_ut_per_sector,
-        num_streams_per_tx=ut_array.num_ant
-    )
+    # num_ofdm_sym = 1
+    # num_subcarriers = 128
+    # subcarrier_spacing = 15e3
+    resource_grid = sionna.phy.ofdm.ResourceGrid(num_ofdm_symbols=num_ofdm_sym,
+                                                 fft_size=num_subcarriers,
+                                                 subcarrier_spacing=subcarrier_spacing,
+                                                 num_tx=num_ut_per_sector,
+                                                 num_streams_per_tx=ut_array.num_ant
+                                                 )
     
     # 时间参数
     slot_duration = 1e-3  # 时隙持续时间1ms
     num_slots = 1000  # 仿真时隙数
 
     # 卫星位置配置
+    # 使用六边形网格的站间距(ISD)来计算基站位置
     hex_radius = cell_radius  # 六边形半径等于小区半径
     satellite_height = 500000  # 卫星高度500km
     
@@ -796,11 +791,9 @@ def main():
 
     # 绘制拓扑图
     # 创建六边形网格
-    grid = sionna.sys.topology.HexGrid(
-        num_rings=1,
-        cell_radius=cell_radius,
-        cell_height=satellite_height
-    )
+    grid = sionna.sys.topology.HexGrid(num_rings=1,
+                                      cell_radius=cell_radius,
+                                      cell_height=satellite_height)
     
     # 获取小区中心位置
     cell_centers = np.array(list(custom_bs_positions.values()))
@@ -903,24 +896,18 @@ def main():
     
     plt.show()
 
-    # 运行仿真并收集结果
     num_slots = tf.constant(1000, tf.int32)
     bler_target = tf.constant(0.1, tf.float32)
     olla_delta_up = tf.constant(0.2, tf.float32)
 
     alpha_ul = tf.constant(1., tf.float32)
     p0_dbm_ul = tf.constant(-80., tf.float32)
-    
-    print("\n开始仿真...")
     hist = sls(num_slots,
                alpha_ul,
                p0_dbm_ul,
                bler_target,
                olla_delta_up)
     hist = clean_hist(hist)
-    
-    print("\n仿真完成，生成性能指标...")
-    
     results_avg = {
         'TBLER': (1 - np.nanmean(hist['harq'], axis=0)).flatten(),
         'MCS': np.nanmean(hist['mcs_index'], axis=0).flatten(),
@@ -934,7 +921,6 @@ def main():
     }
     metrics = list(results_avg.keys())
 
-    # 绘制性能指标CDF图
     fig, axs = plt.subplots(3, 3, figsize=(8, 6.5))
     fig.suptitle('Per-user performance metrics', y=.99)
 
@@ -955,25 +941,13 @@ def main():
     fig.tight_layout()
     plt.show()
 
-    # 绘制性能指标相关性图
-    fig, axs = pairplot(results_avg, ['Effective SINR [dB]', 'MCS', '# decoded bits / slot'], 
-                        suptitle='MCS, SINR, and throughput')
-    plt.show()
-
-    fig, axs = pairplot(results_avg, ['TBLER', 'MCS', 'OLLA offset'], 
-                        suptitle='TBLER, MCS, and OLLA offset')
+    fig, axs = pairplot(results_avg, ['Effective SINR [dB]', 'MCS', '# decoded bits / slot'], suptitle='MCS, SINR, and throughput')
+    fig, axs = pairplot(results_avg, ['TBLER', 'MCS', 'OLLA offset'], suptitle='TBLER, MCS, and OLLA offset')
     for ii in range(3):
         axs[ii, 0].plot([bler_target]*2, axs[ii, 0].get_ylim(), '--k')
     plt.show()
 
-    fig, axs = pairplot(results_avg, ['# allocated REs / slot', 'PF metric', 'MCS'], 
-                        suptitle='PF metric, allocated resources, and MCS')
+    fig, axs = pairplot(results_avg, ['# allocated REs / slot', 'PF metric', 'MCS'], suptitle='PF metric, allocated resources, and MCS')
     plt.show()
 
-    # 打印平均性能指标
-    print("\n平均性能指标:")
-    for metric, values in results_avg.items():
-        print(f"{metric}: {np.mean(values):.2f}")
-
-if __name__ == "__main__":
-    main()
+main()
