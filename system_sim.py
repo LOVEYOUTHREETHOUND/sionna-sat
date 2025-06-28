@@ -326,7 +326,7 @@ class SystemLevelSimulator(sionna.phy.Block):
                  custom_bs_positions=None,
                  precision=None):
         super().__init__(precision=precision)
-        assert scenario in ['umi', 'uma', 'rma']
+        assert scenario in ['umi', 'uma', 'rma', 'satellite']
         assert direction in ['uplink', 'downlink']
         self.scenario = scenario
         self.batch_size = int(batch_size)
@@ -415,15 +415,12 @@ class SystemLevelSimulator(sionna.phy.Block):
                 **common_params
             )
         elif scenario == 'satellite':
+            # 移除已经在common_params中的参数
             self.channel_model = Satellite(
-                carrier_frequency=carrier_frequency,
-                ut_array=ut_array,
-                bs_array=bs_array,
-                direction=self.direction,
-                beam_type="service",  # 或 "broadcast"
-                height=500000.,  # 500km
-                elevation=90.,   # 90度
-                **common_params
+                beam_type="service",  # 服务波束
+                height=500000.,      # 500km
+                elevation=90.,       # 90度
+                **common_params      # 使用解包方式传递共同参数
             )
 
     def _setup_topology(self, num_rings, min_bs_ut_dist, max_bs_ut_dist, custom_bs_positions):
@@ -683,7 +680,7 @@ def main():
     beam_type = "service"   # 服务波束
 
     # 2、地面小区参数
-    num_rings = 1
+    num_rings = 2
     num_ut_per_sector = 10
     cell_radius = 22600  # 小区半径为22.60km
     isd = cell_radius * np.sqrt(3)  # 站间距，根据小区半径计算

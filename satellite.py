@@ -36,7 +36,7 @@ class Satellite(SystemLevelChannel):
     o2i_model : str
         室内外损耗模型, "low" or "high"
         
-    dtype : tf.DType
+    precision : tf.DType
         数据类型
     """
     
@@ -45,19 +45,21 @@ class Satellite(SystemLevelChannel):
                  beam_type="service", height=500000., elevation=90.,
                  precision=None):
 
-        # 创建场景对象
+        # 创建场景对象 - 传递所有必需的参数
         scenario = SatelliteScenario(
             carrier_frequency=carrier_frequency,
             ut_array=ut_array,
             bs_array=bs_array,
             direction=direction,
-            enable_pathloss=enable_pathloss,
-            enable_shadow_fading=enable_shadow_fading,
-            beam_type=beam_type,
+            o2i_model="low",  # 使用默认值
             height=height,
             elevation=elevation,
             precision=precision
         )
         
-        # 调用父类初始化
-        super().__init__(scenario, precision=precision)
+        # 调用父类初始化 - 只传递父类需要的参数
+        super().__init__(
+            scenario=scenario,
+            always_generate_lsp=False,  # 使用默认值
+            precision=precision
+        )

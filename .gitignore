@@ -57,3 +57,4 @@ events.out.tfevents.*
 *.mat
 model_weights/
 results/ 
+/doc

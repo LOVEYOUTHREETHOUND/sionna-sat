@@ -179,11 +179,89 @@ class CustomHexGrid(HexGrid):
 
         return ut_loc, mirror_cell_per_ut_loc, wraparound_dist
 
+def set_satellite_scenario_parameters(min_bs_ut_dist=None,
+                                    isd=None,
+                                    bs_height=None,
+                                    min_ut_height=None,
+                                    max_ut_height=None,
+                                    indoor_probability=None,
+                                    min_ut_velocity=None,
+                                    max_ut_velocity=None,
+                                    precision=None):
+    """为卫星场景设置默认参数
+    
+    Parameters
+    ----------
+    min_bs_ut_dist : float | None
+        最小卫星-用户距离 [m]
+        
+    isd : float | None
+        波束间距 [m]
+        
+    bs_height : float | None
+        卫星高度 [m]
+        
+    min_ut_height : float | None
+        最小用户高度 [m]
+        
+    max_ut_height : float | None
+        最大用户高度 [m]
+        
+    indoor_probability : float | None
+        室内用户概率
+        
+    min_ut_velocity : float | None
+        最小用户速度 [m/s]
+        
+    max_ut_velocity : float | None
+        最大用户速度 [m/s]
+        
+    precision : str | None
+        计算精度
+        
+    Returns
+    -------
+    tuple
+        (min_bs_ut_dist, isd, bs_height, min_ut_height, max_ut_height,
+         indoor_probability, min_ut_velocity, max_ut_velocity)
+    """
+    if precision is None:
+        rdtype = tf.float32
+    else:
+        rdtype = dtypes[precision]["tf"]["rdtype"]
+        
+    # 设置卫星场景的默认参数
+    if min_bs_ut_dist is None:
+        min_bs_ut_dist = tf.cast(35.0, rdtype)  # 最小距离35m
+        
+    if isd is None:
+        isd = tf.cast(1000.0, rdtype)  # 波束间距1000m
+        
+    if bs_height is None:
+        bs_height = tf.cast(500000.0, rdtype)  # 卫星高度500km
+        
+    if min_ut_height is None:
+        min_ut_height = tf.cast(0.0, rdtype)  # 地面高度
+        
+    if max_ut_height is None:
+        max_ut_height = tf.cast(10.0, rdtype)  # 最大建筑高度
+        
+    if indoor_probability is None:
+        indoor_probability = tf.cast(0.8, rdtype)  # 80%室内用户
+        
+    if min_ut_velocity is None:
+        min_ut_velocity = tf.cast(0.0, rdtype)  # 静止用户
+        
+    if max_ut_velocity is None:
+        max_ut_velocity = tf.cast(3.0, rdtype)  # 最大3m/s (步行速度)
+        
+    return (min_bs_ut_dist, isd, bs_height, min_ut_height, max_ut_height,
+            indoor_probability, min_ut_velocity, max_ut_velocity)
+
 def gen_custom_hexgrid_topology(batch_size,
                               num_rings,
                               num_ut_per_sector,
                               scenario,
-                              custom_bs_positions=None,
                               min_bs_ut_dist=None,
                               max_bs_ut_dist=None,
                               isd=None,
@@ -193,41 +271,102 @@ def gen_custom_hexgrid_topology(batch_size,
                               indoor_probability=None,
                               min_ut_velocity=None,
                               max_ut_velocity=None,
-                              downtilt_to_sector_center=True,
                               los=None,
                               return_grid=False,
+                              custom_bs_positions=None,
+                              downtilt_to_sector_center=True,
                               precision=None):
-    """生成带有自定义基站位置的六边形网格拓扑
-    
-    基于sionna.sys.gen_hexgrid_topology扩展,支持自定义基站位置
+    """生成自定义六边形网格拓扑
     
     Parameters
     ----------
-    与gen_hexgrid_topology相同,另外添加:
-    
-    custom_bs_positions : dict | None (default)
-        自定义基站位置字典,格式为:
-        {cell_index: (x,y,z)}
-        其中cell_index为小区索引,每个小区指定一个基站的位置
+    batch_size : int
+        批量大小
         
-    Returns
-    -------
-    与gen_hexgrid_topology相同
+    num_rings : int
+        环数
+        
+    num_ut_per_sector : int
+        每个扇区的用户数
+        
+    scenario : str
+        场景类型 ('umi', 'uma', 'rma', 'satellite')
+        
+    min_bs_ut_dist : float | None
+        最小基站-用户距离 [m]
+        
+    max_bs_ut_dist : float | None
+        最大基站-用户距离 [m]
+        
+    isd : float | None
+        站间距 [m]
+        
+    bs_height : float | None
+        基站高度 [m]
+        
+    min_ut_height : float | None
+        最小用户高度 [m]
+        
+    max_ut_height : float | None
+        最大用户高度 [m]
+        
+    indoor_probability : float | None
+        室内用户概率
+        
+    min_ut_velocity : float | None
+        最小用户速度 [m/s]
+        
+    max_ut_velocity : float | None
+        最大用户速度 [m/s]
+        
+    los : bool | None
+        是否强制LOS
+        
+    return_grid : bool
+        是否返回网格对象
+        
+    custom_bs_positions : dict | None
+        自定义基站位置
+        
+    downtilt_to_sector_center : bool
+        是否将天线下倾指向扇区中心
+        
+    precision : str | None
+        计算精度
     """
-    # 设置3GPP场景参数
-    params = set_3gpp_scenario_parameters(scenario,
-                                        min_bs_ut_dist,
-                                        isd,
-                                        bs_height,
-                                        min_ut_height,
-                                        max_ut_height,
-                                        indoor_probability,
-                                        min_ut_velocity,
-                                        max_ut_velocity,
-                                        precision=precision)
+    
+    # 根据场景类型选择参数设置函数
+    if scenario == 'satellite':
+        params = set_satellite_scenario_parameters(
+            min_bs_ut_dist,
+            isd,
+            bs_height,
+            min_ut_height,
+            max_ut_height,
+            indoor_probability,
+            min_ut_velocity,
+            max_ut_velocity,
+            precision=precision
+        )
+        # 卫星场景不需要下倾
+        downtilt_to_sector_center = False
+    else:
+        params = set_3gpp_scenario_parameters(
+            scenario,
+            min_bs_ut_dist,
+            isd,
+            bs_height,
+            min_ut_height,
+            max_ut_height,
+            indoor_probability,
+            min_ut_velocity,
+            max_ut_velocity,
+            precision=precision
+        )
+    
     min_bs_ut_dist, isd, bs_height, min_ut_height, max_ut_height, \
         indoor_probability, min_ut_velocity, max_ut_velocity = params
-
+        
     if precision is None:
         rdtype = config.tf_rdtype
     else:
