@@ -5,8 +5,6 @@ import sionna.phy
 import numpy as np
 import matplotlib.pyplot as plt
 
-from satellite import Satellite  # 导入卫星场景类
-
 import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
 gpus = tf.config.list_physical_devices('GPU')
@@ -16,22 +14,8 @@ if gpus:
     except RuntimeError as e:
         print(e)
 
-from topology import gen_custom_hexgrid_topology
-
 
 class ChannelMatrix(sionna.phy.Block):
-    """MIMO信道矩阵生成和管理类
-    
-    该类负责生成和更新MIMO系统的信道矩阵,包括时变衰落效应
-    
-    Args:
-        resource_grid: OFDM资源网格配置对象
-        batch_size: 批处理大小
-        num_rx: 接收天线数量
-        num_tx: 发射天线数量
-        coherence_time: 信道相干时间(单位:时隙)
-        precision: 数值精度
-    """
     def __init__(self,
                  resource_grid,
                  batch_size,
@@ -43,20 +27,10 @@ class ChannelMatrix(sionna.phy.Block):
         self.resource_grid = resource_grid
         self.coherence_time = coherence_time
         self.batch_size = batch_size
-        # 初始化衰落相关系数,范围0.95-0.99
         self.rho_fading = sionna.phy.config.tf_rng.uniform([batch_size, num_rx, num_tx], minval=.95, maxval=.99, dtype=self.rdtype)
-        # 初始化衰落系数为1
         self.fading = tf.ones([batch_size, num_rx, num_tx], dtype=self.rdtype)
 
     def call(self, channel_model):
-        """生成OFDM信道响应
-        
-        Args:
-            channel_model: TR38.901信道模型对象
-            
-        Returns:
-            h_freq: 频域信道响应
-        """
         ofdm_channel = sionna.phy.channel.GenerateOFDMChannel(channel_model, self.resource_grid)
 
         h_freq = ofdm_channel(self.batch_size)
@@ -66,50 +40,22 @@ class ChannelMatrix(sionna.phy.Block):
                channel_model,
                h_freq,
                slot):
-        """根据相干时间更新信道响应
-        
-        每个相干时间周期重新生成信道响应
-        
-        Args:
-            channel_model: TR38.901信道模型对象
-            h_freq: 当前频域信道响应
-            slot: 当前时隙索引
-            
-        Returns:
-            h_freq: 更新后的频域信道响应
-        """
         h_freq_new = self.call(channel_model)
-        # 判断是否需要更新信道(基于相干时间)
         change = tf.cast(tf.math.mod(
             slot, self.coherence_time) == 0, self.cdtype)
-        # 在相干时间边界更新信道响应
         h_freq = change * h_freq_new + \
             (tf.cast(1, self.cdtype) - change) * h_freq
         return h_freq
 
     def apply_fading(self,
                      h_freq):
-        """应用时变衰落效应
-        
-        使用自回归过程模拟时变衰落
-        
-        Args:
-            h_freq: 频域信道响应
-            
-        Returns:
-            h_freq_fading: 加入衰落效应后的信道响应
-        """
-        # 更新衰落系数,使用AR-1过程
         self.fading = tf.cast(1, self.rdtype) - self.rho_fading + self.rho_fading * self.fading + \
             sionna.phy.config.tf_rng.uniform(
                 self.fading.shape, minval=-.1, maxval=.1, dtype=self.rdtype
             )
-        # 确保衰落系数非负
         self.fading = tf.maximum(self.fading, tf.cast(0, self.rdtype))
-        # 扩展维度以匹配信道响应
         fading_expand = sionna.phy.utils.insert_dims(self.fading, 1, axis=2)
         fading_expand = sionna.phy.utils.insert_dims(fading_expand, 3, axis=4)
-        # 应用衰落到信道响应
         h_freq_fading = tf.cast(tf.math.sqrt(
             fading_expand), self.cdtype) * h_freq
         return h_freq_fading
@@ -180,32 +126,11 @@ def get_sinr(tx_power,
 def estimate_achievable_rate(sinr_eff_db_last,
                              num_ofdm_sym,
                              num_subcarriers):
-    """估计可达速率
-    
-    基于香农公式计算给定SINR下的理论可达速率
-    
-    Args:
-        sinr_eff_db_last: 上一时隙的有效SINR(dB)
-        num_ofdm_sym: OFDM符号数
-        num_subcarriers: 子载波数
-        
-    Returns:
-        rate_achievable_est: 估计的可达速率
-    """
-    # 使用香农公式计算可达速率
-    rate_achievable_est = sionna.phy.utils.log2(
-        tf.cast(1, sinr_eff_db_last.dtype) + 
-        sionna.phy.utils.db_to_lin(sinr_eff_db_last)
-    )
-    # 扩展维度
+    rate_achievable_est = sionna.phy.utils.log2(tf.cast(1, sinr_eff_db_last.dtype) + sionna.phy.utils.db_to_lin(sinr_eff_db_last))
     rate_achievable_est = sionna.phy.utils.insert_dims(
         rate_achievable_est, 2, axis=-2
     )
-    # 复制到所有资源元素
-    rate_achievable_est = tf.tile(
-        rate_achievable_est, 
-        [1, 1, num_ofdm_sym, num_subcarriers, 1]
-    )
+    rate_achievable_est = tf.tile(rate_achievable_est, [1, 1, num_ofdm_sym, num_subcarriers, 1])
     return rate_achievable_est
 
 
@@ -213,33 +138,17 @@ def init_result_history(batch_size,
                         num_slots,
                         num_bs,
                         num_ut_per_sector):
-    """初始化仿真结果历史记录
-    
-    创建TensorArray存储各项性能指标
-    
-    Args:
-        batch_size: 批处理大小
-        num_slots: 总时隙数
-        num_bs: 基站数量
-        num_ut_per_sector: 每扇区用户数
-        
-    Returns:
-        hist: 包含各项指标的字典
-    """
     hist = {}
-    # 初始化各项性能指标的存储数组
-    for key in ['pathloss_serving_cell',  # 服务小区路损
-                'tx_power',                # 发射功率
-                'olla_offset',             # OLLA偏移
-                'sinr_eff',                # 有效SINR
-                'pf_metric',               # 比例公平度量
-                'num_decoded_bits',        # 解码比特数
-                'mcs_index',               # MCS索引
-                'harq',                    # HARQ反馈
-                'num_allocated_re']:       # 分配的资源元素数
+    for key in ['pathloss_serving_cell',
+                'tx_power', 'olla_offset',
+                'sinr_eff', 'pf_metric',
+                'num_decoded_bits', 'mcs_index',
+                'harq', 'num_allocated_re']:
         hist[key] = tf.TensorArray(
             size=num_slots,
-            element_shape=[batch_size, num_bs, num_ut_per_sector],
+            element_shape=[batch_size,
+                           num_bs,
+                           num_ut_per_sector],
             dtype=tf.float32
         )
     return hist
@@ -323,10 +232,9 @@ class SystemLevelSimulator(sionna.phy.Block):
                  o2i_model='low',
                  average_street_width=20.0,
                  average_building_height=5.0,
-                 custom_bs_positions=None,
                  precision=None):
         super().__init__(precision=precision)
-        assert scenario in ['umi', 'uma', 'rma', 'satellite']
+        assert scenario in ['umi', 'uma', 'rma']
         assert direction in ['uplink', 'downlink']
         self.scenario = scenario
         self.batch_size = int(batch_size)
@@ -372,7 +280,7 @@ class SystemLevelSimulator(sionna.phy.Block):
             average_street_width, average_building_height
         )
 
-        self._setup_topology(num_rings, min_bs_ut_dist, max_bs_ut_dist, custom_bs_positions)
+        self._setup_topology(num_rings, min_bs_ut_dist, max_bs_ut_dist)
         self.phy_abs = sionna.sys.PHYAbstraction(precision=self.precision)
         
         self.olla = sionna.sys.OuterLoopLinkAdaptation(
@@ -414,19 +322,11 @@ class SystemLevelSimulator(sionna.phy.Block):
                 average_building_height=average_building_height,
                 **common_params
             )
-        elif scenario == 'satellite':
-            # 移除已经在common_params中的参数
-            self.channel_model = Satellite(
-                beam_type="service",  # 服务波束
-                height=500000.,      # 500km
-                elevation=90.,       # 90度
-                **common_params      # 使用解包方式传递共同参数
-            )
 
-    def _setup_topology(self, num_rings, min_bs_ut_dist, max_bs_ut_dist, custom_bs_positions):
+    def _setup_topology(self, num_rings, min_bs_ut_dist, max_bs_ut_dist):
         self.ut_loc, self.bs_loc, self.ut_orientations, self.bs_orientations, \
             self.ut_velocities, self.in_state, self.los, self.bs_virtual_loc, self.grid = \
-            gen_custom_hexgrid_topology(
+            sionna.sys.gen_hexgrid_topology(
                 batch_size=self.batch_size,
                 num_rings=num_rings,
                 num_ut_per_sector=self.num_ut_per_sector,
@@ -435,7 +335,6 @@ class SystemLevelSimulator(sionna.phy.Block):
                 scenario=self.scenario,
                 los=True,
                 return_grid=True,
-                custom_bs_positions=custom_bs_positions,
                 precision=self.precision
             )
         self.channel_model.set_topology(
@@ -673,85 +572,39 @@ def pairplot(dic, keys, suptitle=None, figsize=2.5):
 
 
 def main():
-    # 1、基本场景参数
     direction = 'downlink'
-    # scenario = 'umi'
-    scenario = 'satellite'
-    beam_type = "service"   # 服务波束
-
-    # 2、地面小区参数
-    num_rings = 2
+    scenario = 'umi'
+    num_rings = 1
     num_ut_per_sector = 10
-    cell_radius = 22600  # 小区半径为22.60km
-    isd = cell_radius * np.sqrt(3)  # 站间距，根据小区半径计算
-    max_bs_ut_dist = cell_radius  # 最大用户距离设为小区半径
-    min_bs_ut_dist = 0  # 最小用户距离
-    num_ut_per_sector = 10  # 每波束用户数
-    
+    max_bs_ut_dist = 80
+    min_bs_ut_dist = 0
     carrier_frequency = 3.5e9
-
-    # bs_max_power_dbm = 56
-    # ut_max_power_dbm = 26
+    bs_max_power_dbm = 56
+    ut_max_power_dbm = 26
     coherence_time = 100
     mcs_table_index = 1
     batch_size = 1
-
-    # 卫星天线阵列
-    bs_array = sionna.phy.channel.tr38901.PanelArray(num_rows_per_panel=20,
-                                                     num_cols_per_panel=20,
+    bs_array = sionna.phy.channel.tr38901.PanelArray(num_rows_per_panel=2,
+                                                     num_cols_per_panel=3,
                                                      polarization='dual',
                                                      polarization_type='VH',
                                                      antenna_pattern='38.901',
-                                                     carrier_frequency=carrier_frequency,
-                                                     element_vertical_spacing=0.5,
-                                                     element_horizontal_spacing=0.5 )      # 半波长间距)
-    # 用户天线
+                                                     carrier_frequency=carrier_frequency)
     ut_array = sionna.phy.channel.tr38901.PanelArray(num_rows_per_panel=1,
                                                      num_cols_per_panel=1,
                                                      polarization='single',
                                                      polarization_type='V',
                                                      antenna_pattern='omni',
                                                      carrier_frequency=carrier_frequency)
-    # 功率配置
-    system_bandwidth = 30e6  # 系统带宽30MHz
-    eirp_density = 41.41    # EIRP功率密度(dBW/MHz)
-    # 转换为dBm
-    bs_max_power_dbm = eirp_density + 10*np.log10(system_bandwidth/1e6) + 30
-    ut_max_power_dbm = 26  # 用户终端功率
-
-    # 资源网格配置
-    subcarrier_spacing = 15e3  # 子载波间隔15kHz
-    num_ofdm_sym = 14        # 每时隙14个OFDM符号
-    num_subcarriers = int(system_bandwidth/subcarrier_spacing)  # 子载波数
-    # num_ofdm_sym = 1
-    # num_subcarriers = 128
-    # subcarrier_spacing = 15e3
+    num_ofdm_sym = 1
+    num_subcarriers = 128
+    subcarrier_spacing = 15e3
     resource_grid = sionna.phy.ofdm.ResourceGrid(num_ofdm_symbols=num_ofdm_sym,
                                                  fft_size=num_subcarriers,
                                                  subcarrier_spacing=subcarrier_spacing,
                                                  num_tx=num_ut_per_sector,
                                                  num_streams_per_tx=ut_array.num_ant
                                                  )
-    
-    # 时间参数
-    slot_duration = 1e-3  # 时隙持续时间1ms
-    num_slots = 1000  # 仿真时隙数
-
-    # 卫星位置配置
-    # 使用六边形网格的站间距(ISD)来计算基站位置
-    hex_radius = cell_radius  # 六边形半径等于小区半径
-    satellite_height = 500000  # 卫星高度500km
-    
-    custom_bs_positions = {
-        0: (0, 0, satellite_height),                    # 中心卫星
-        1: (-hex_radius*1.5, hex_radius*np.sqrt(3)/2, satellite_height),  # 左上卫星
-        2: (0, hex_radius*np.sqrt(3), satellite_height),                  # 上卫星
-        3: (hex_radius*1.5, hex_radius*np.sqrt(3)/2, satellite_height),   # 右上卫星
-        4: (hex_radius*1.5, -hex_radius*np.sqrt(3)/2, satellite_height),  # 右下卫星
-        5: (0, -hex_radius*np.sqrt(3), satellite_height),                 # 下卫星
-        6: (-hex_radius*1.5, -hex_radius*np.sqrt(3)/2, satellite_height)  # 左下卫星
-    }
-    
     sls = SystemLevelSimulator(
         batch_size,
         num_rings,
@@ -770,130 +623,14 @@ def main():
         temperature=294,
         o2i_model='low',
         average_street_width=20.,
-        average_building_height=10.,
-        custom_bs_positions=custom_bs_positions,
-        precision=None
+        average_building_height=10.
     )
 
-    # 打印每个小区的中心位置
-    print("\n小区中心位置:")
-    cell_centers = sls.grid.cell_loc.numpy()
-    for i, center in enumerate(cell_centers):
-        print(f"小区 {i}: (x={center[0]:.2f}, y={center[1]:.2f}, z={center[2]:.2f})")
-
-    # 打印每个扇区的基站位置
-    print("\n扇区基站位置:")
-    bs_locations = sls.bs_loc[0].numpy()  # [0]是因为batch_size=1
-    for i, bs_pos in enumerate(bs_locations):
-        sector_num = i % 3 + 1
-        cell_num = i // 3
-        print(f"小区 {cell_num} 扇区 {sector_num}: (x={bs_pos[0]:.2f}, y={bs_pos[1]:.2f}, z={bs_pos[2]:.2f})")
-
-    # 绘制拓扑图
-    # 创建六边形网格
-    grid = sionna.sys.topology.HexGrid(num_rings=1,
-                                      cell_radius=cell_radius,
-                                      cell_height=satellite_height)
-    
-    # 获取小区中心位置
-    cell_centers = np.array(list(custom_bs_positions.values()))
-    
-    # 2D视图
-    plt.figure(figsize=(10, 8))
-    
-    # 绘制小区边界
-    for i in range(len(cell_centers)):
-        # 计算六边形顶点
-        corners = []
-        for angle in np.linspace(0, 2*np.pi, 7)[:-1]:  # 6个顶点
-            x = cell_centers[i][0] + cell_radius * np.cos(angle)
-            y = cell_centers[i][1] + cell_radius * np.sin(angle)
-            corners.append([x, y])
-        corners = np.array(corners)
-        
-        # 绘制六边形
-        plt.plot(np.append(corners[:, 0], corners[0, 0]),
-                np.append(corners[:, 1], corners[0, 1]),
-                'b-', label='base cell' if i == 0 else None)
-    
-    # 绘制基站位置
-    plt.scatter(cell_centers[:, 0], cell_centers[:, 1], 
-               c='red', marker='^', s=100, label='BS positions')
-    
-    # 绘制用户位置（如果有）
-    if 'ut_positions' in locals():
-        plt.scatter(ut_positions[:, 0], ut_positions[:, 1],
-                   c='black', marker='x', label='User positions')
-    
-    # 添加小区编号
-    for i, center in enumerate(cell_centers):
-        plt.text(center[0], center[1], f'Cell {i}',
-                horizontalalignment='center', verticalalignment='bottom')
-    
-    plt.grid(True)
-    plt.axis('equal')
-    plt.xlabel('X (meters)')
-    plt.ylabel('Y (meters)')
-    plt.title('System Topology with Cell Centers (2D view)')
-    plt.legend()
-    
-    # 3D视图
-    fig_3d = plt.figure(figsize=(12, 10))
-    ax_3d = fig_3d.add_subplot(111, projection='3d')
-    
-    # 绘制用户位置
-    ut_positions = sls.ut_loc[0].numpy()
-    ax_3d.scatter(ut_positions[:, 0]/1000, ut_positions[:, 1]/1000, ut_positions[:, 2]/1000,
-                 c='black', marker='x', label='User positions')
-    
-    # 绘制卫星位置
-    ax_3d.scatter(cell_centers[:, 0]/1000, cell_centers[:, 1]/1000, cell_centers[:, 2]/1000,
-                 c='red', marker='^', s=100, label='Satellite positions')
-    
-    # 为每个卫星添加标签
-    for i, center in enumerate(cell_centers):
-        ax_3d.text(center[0]/1000, center[1]/1000, center[2]/1000, f'Satellite {i}')
-    
-    # 绘制从卫星到地面的投影线
-    for center in cell_centers:
-        ax_3d.plot([center[0]/1000, center[0]/1000], 
-                  [center[1]/1000, center[1]/1000], 
-                  [0, center[2]/1000], 
-                  'r--', alpha=0.3)
-    
-    # 绘制六边形小区的地面投影
-    for i in range(len(cell_centers)):
-        # 计算六边形顶点
-        corners = []
-        for angle in np.linspace(0, 2*np.pi, 7)[:-1]:  # 6个顶点
-            x = cell_centers[i][0] + cell_radius * np.cos(angle)
-            y = cell_centers[i][1] + cell_radius * np.sin(angle)
-            corners.append([x, y])
-        corners = np.array(corners)
-        
-        # 绘制六边形
-        for j in range(6):
-            ax_3d.plot([corners[j][0]/1000, corners[(j+1)%6][0]/1000],
-                      [corners[j][1]/1000, corners[(j+1)%6][1]/1000],
-                      [0, 0], 'b-', alpha=0.5)
-    
-    # 设置坐标轴标签
-    ax_3d.set_xlabel('X (kilometers)')
-    ax_3d.set_ylabel('Y (kilometers)')
-    ax_3d.set_zlabel('Z (kilometers)')
-    
-    # 设置视角
-    ax_3d.view_init(elev=20, azim=45)
-    
-    # 调整Z轴的范围，使卫星和地面用户都能清晰显示
-    z_min = 0
-    z_max = satellite_height/1000 * 1.1  # 略高于卫星高度
-    ax_3d.set_zlim(z_min, z_max)
-    
-    # 设置标题和图例
-    ax_3d.set_title('Satellite System Topology (3D View)')
-    ax_3d.legend()
-    
+    fig = sls.grid.show()
+    ax = fig.get_axes()
+    ax[0].plot(sls.ut_loc[0, :, 0], sls.ut_loc[0, :, 1],
+               'xk', label='user position')
+    ax[0].legend()
     plt.show()
 
     num_slots = tf.constant(1000, tf.int32)

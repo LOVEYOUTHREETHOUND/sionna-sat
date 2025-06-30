@@ -9,6 +9,7 @@ from sionna.phy.block import Object
 from sionna.phy.utils import log10, insert_dims, sample_bernoulli
 from sionna.phy.channel.utils import rad_2_deg, wrap_angle_0_360
 from sionna.phy.channel import ChannelModel
+from sionna.phy.channel.tr38901 import PanelArray
 
 class SystemLevelScenario(Object):
     r"""

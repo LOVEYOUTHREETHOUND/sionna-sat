@@ -1,14 +1,15 @@
 import tensorflow as tf
 import numpy as np
 from sionna.phy.utils import insert_dims, scalar_to_shaped_tensor, flatten_dims, sample_bernoulli
-from sionna.phy import PI, config, dtypes
+from sionna.phy import PI, config, dtypes, Block, Object
 from sionna.phy.channel.utils import random_ut_properties, set_3gpp_scenario_parameters
-from sionna.sys.topology import HexGrid, gen_hexgrid_topology
+from sionna.sys.topology import HexGrid, Hexagon, convert_hex_coord
 
 class CustomHexGrid(HexGrid):
-    """扩展的六边形网格类,支持自定义基站位置
+    """扩展的六边形网格类,支持自定义卫星波束位置
     
-    继承自sionna.sys.topology.HexGrid,添加了自定义基站位置的功能
+    继承自sionna.sys.topology.HexGrid,添加了自定义卫星波束位置的功能。
+    使用螺旋式布局算法确保六边形波束之间无缝连接。
     
     Parameters
     ----------
@@ -16,13 +17,13 @@ class CustomHexGrid(HexGrid):
         网格环数
         
     cell_radius : float | None (default)
-        每个六边形小区的半径,定义为小区中心到任意角的距离
+        每个六边形波束的半径,定义为波束中心到任意角的距离
         
     cell_height : float (default: 0.)
-        小区高度[m]
+        卫星高度[m]
         
     isd : float | None (default)
-        站间距。必须指定cell_radius或isd其中之一
+        波束间距。必须指定cell_radius或isd其中之一
         
     center_loc : [2], list | tuple (default: (0,0))
         网格中心坐标
@@ -31,9 +32,9 @@ class CustomHexGrid(HexGrid):
         center_coord的坐标类型
         
     custom_bs_positions : dict | None (default)
-        自定义基站位置字典,格式为:
-        {cell_index: (x,y,z)}
-        其中cell_index为小区索引,每个小区指定一个基站的位置
+        自定义卫星波束位置字典,格式为:
+        {beam_index: (x,y,z)}
+        其中beam_index为波束索引,每个波束指定一个卫星的位置
         
     precision : None (default) | "single" | "double"
         内部计算和输出使用的精度
@@ -47,10 +48,6 @@ class CustomHexGrid(HexGrid):
                  center_loc_type='offset',
                  custom_bs_positions=None,
                  precision=None):
-        # 在调用父类__init__之前先初始化_custom_bs_positions
-        self._custom_bs_positions = custom_bs_positions
-        self._original_cell_loc = None
-        
         super().__init__(num_rings=num_rings,
                         cell_radius=cell_radius,
                         cell_height=cell_height,
@@ -59,124 +56,45 @@ class CustomHexGrid(HexGrid):
                         center_loc_type=center_loc_type,
                         precision=precision)
         
-    @property
-    def cell_loc(self):
-        """
-        [num_cells, 3], float : 基站位置的欧几里得坐标[m]
-        如果指定了custom_bs_positions,则返回自定义的基站位置
-        否则返回默认的小区中心位置
-        """
-        if self._custom_bs_positions is None:
-            # 使用默认的小区中心位置
-            cell_loc = tf.convert_to_tensor([cell.coord_euclid
-                                           for _, cell in self.grid.items()],
-                                          dtype=self.rdtype)
-            cell_height = tf.fill([cell_loc.shape[0], 1], self.cell_height)
-            cell_loc = tf.concat([cell_loc, cell_height], axis=-1)
-            self._original_cell_loc = cell_loc
-            return cell_loc
-        else:
-            # 使用自定义基站位置
-            bs_positions = []
-            original_positions = []
-            for cell_idx in range(len(self.grid)):
-                cell = self.grid[cell_idx]
-                # 保存原始小区中心位置
-                original_pos = [cell.coord_euclid[0], cell.coord_euclid[1], self.cell_height]
-                original_positions.append(original_pos)
-                
-                if cell_idx in self._custom_bs_positions:
-                    # 使用自定义位置
-                    bs_positions.append(self._custom_bs_positions[cell_idx])
-                else:
-                    # 使用默认小区中心位置
-                    bs_positions.append(original_pos)
-            
-            # 保存原始小区中心位置用于用户放置
-            self._original_cell_loc = tf.cast(original_positions, self.rdtype)
-            # 返回基站位置
-            return tf.cast(bs_positions, self.rdtype)
-
+        self.custom_bs_positions = custom_bs_positions
+        
     def call(self,
              batch_size,
-             num_ut_per_sector,
+             num_ut_per_beam,
              min_bs_ut_dist,
              max_bs_ut_dist=None,
-             min_ut_height=None,
-             max_ut_height=None):
-        """重写call方法以使用原始小区中心位置进行用户放置"""
+             min_ut_height=0.,
+             max_ut_height=0.):
+        """生成波束内的用户位置
         
-        # 使用原始小区中心位置进行用户放置计算
-        cell_loc_bcast = insert_dims(self._original_cell_loc, num_dims=1, axis=0)
-        cell_loc_bcast = insert_dims(cell_loc_bcast, num_dims=2, axis=2)
-        cell_loc_bcast = tf.cast(cell_loc_bcast, self.rdtype)
-
-        # Random angles within half a sector, between [-pi/6; pi/6]
-        alpha_half = config.tf_rng.uniform(shape=[batch_size,
-                                                 len(self.grid),
-                                                 3,  # n. sectors
-                                                 num_ut_per_sector],
-                                          minval=-PI/6.,
-                                          maxval=PI/6.,
-                                          dtype=self.rdtype)
-
-        # 其余代码与父类相同
-        r_max = tf.cast(self.isd, self.rdtype) / (2*tf.math.cos(alpha_half))
-        if max_bs_ut_dist is not None:
-            r_max = tf.minimum(r_max, tf.cast(max_bs_ut_dist, self.rdtype))
-
-        r_min = tf.cast(min_bs_ut_dist, self.rdtype)
-        distance = config.tf_rng.uniform(shape=[batch_size,
-                                               len(self.grid),
-                                               3,
-                                               num_ut_per_sector],
-                                       minval=r_min,
-                                       maxval=r_max,
-                                       dtype=self.rdtype)
-
-        side = sample_bernoulli([batch_size, len(self.grid), 3, num_ut_per_sector],
-                               tf.cast(0.5, self.rdtype),
-                               precision=self.precision)
-        side = tf.cast(side, self.rdtype)
-        side = 2. * side + 1.
-        alpha = alpha_half + side * PI/6.
-
-        alpha_offset = tf.cast([0, 2*PI/3, 4*PI/3], self.rdtype)
-        alpha_offset = insert_dims(alpha_offset, num_dims=2, axis=0)
-        alpha_offset = insert_dims(alpha_offset, num_dims=1, axis=-1)
-        alpha = alpha + alpha_offset
-
-        ut_loc = tf.stack([distance * tf.math.cos(alpha),
-                          distance * tf.math.sin(alpha)], axis=-1)
-        ut_loc = ut_loc + cell_loc_bcast[..., :2]
-
-        ut_height = config.tf_rng.uniform(shape=ut_loc.shape[:-1] + [1],
-                                        minval=min_ut_height if min_ut_height is not None else 0.,
-                                        maxval=max_ut_height if max_ut_height is not None else 0.,
-                                        dtype=self.rdtype)
-        ut_loc = tf.concat([ut_loc, ut_height], axis=-1)
-
-        # 计算到所有基站的距离
-        ut_loc_bcast = insert_dims(ut_loc, num_dims=2, axis=4)
-        mirror_loc_bcast = insert_dims(self.mirror_cell_loc, num_dims=4, axis=0)
-        mirror_loc_bcast = tf.tile(mirror_loc_bcast,
-                                  multiples=[batch_size,
-                                            len(self.grid),
-                                            3,
-                                            num_ut_per_sector,
-                                            1, 1, 1])
-
-        ut_mirror_cells_dist = tf.norm(ut_loc_bcast - tf.cast(mirror_loc_bcast, self.rdtype),
-                                     ord='euclidean',
-                                     axis=-1)
-
-        wraparound_dist = tf.reduce_min(ut_mirror_cells_dist, axis=-1)
-        wraparound_mirror_idx = tf.argmin(ut_mirror_cells_dist, axis=-1)
-        mirror_cell_per_ut_loc = tf.gather(mirror_loc_bcast,
-                                          wraparound_mirror_idx,
-                                          axis=-2,
-                                          batch_dims=5)
-
+        Args:
+            batch_size: 批处理大小
+            num_ut_per_beam: 每个波束的用户数
+            min_bs_ut_dist: 最小用户距离
+            max_bs_ut_dist: 最大用户距离
+            min_ut_height: 最小用户高度
+            max_ut_height: 最大用户高度
+            
+        Returns:
+            ut_loc: 用户位置
+            mirror_cell_per_ut_loc: 镜像波束位置
+            wraparound_dist: 环绕距离
+        """
+        # 调用父类的call方法生成用户位置
+        ut_loc, mirror_cell_per_ut_loc, wraparound_dist = super().call(
+            batch_size,
+            num_ut_per_beam,
+            min_bs_ut_dist,
+            max_bs_ut_dist,
+            min_ut_height,
+            max_ut_height
+        )
+        
+        # 如果提供了自定义卫星位置,使用它们替换默认位置
+        if self.custom_bs_positions is not None:
+            for beam_idx, pos in self.custom_bs_positions.items():
+                self.grid[beam_idx].coord_euclid = tf.constant(pos[:2], dtype=self.rdtype)
+                
         return ut_loc, mirror_cell_per_ut_loc, wraparound_dist
 
 def set_satellite_scenario_parameters(min_bs_ut_dist=None,
@@ -287,22 +205,22 @@ def gen_custom_hexgrid_topology(batch_size,
         环数
         
     num_ut_per_sector : int
-        每个扇区的用户数
+        每个扇区/波束的用户数
         
     scenario : str
         场景类型 ('umi', 'uma', 'rma', 'satellite')
         
     min_bs_ut_dist : float | None
-        最小基站-用户距离 [m]
+        最小基站/卫星-用户距离 [m]
         
     max_bs_ut_dist : float | None
-        最大基站-用户距离 [m]
+        最大基站/卫星-用户距离 [m]
         
     isd : float | None
-        站间距 [m]
+        站间距/波束间距 [m]
         
     bs_height : float | None
-        基站高度 [m]
+        基站高度/卫星高度 [m]
         
     min_ut_height : float | None
         最小用户高度 [m]
@@ -326,7 +244,7 @@ def gen_custom_hexgrid_topology(batch_size,
         是否返回网格对象
         
     custom_bs_positions : dict | None
-        自定义基站位置
+        自定义基站/卫星位置
         
     downtilt_to_sector_center : bool
         是否将天线下倾指向扇区中心
@@ -380,18 +298,30 @@ def gen_custom_hexgrid_topology(batch_size,
                         precision=precision)
     num_cells = grid.num_cells
 
-    # 获取基站位置
+    # 获取基站/卫星位置
     bs_loc = grid.cell_loc  # [num_cells, 3]
-    # 每个基站重复3次作为3个扇区
-    bs_loc = tf.repeat(bs_loc, 3, axis=0)  # [num_cells*3, 3]
-    # [batch_size, num_cells*3, 3]
+    
+    # 只在非卫星场景下重复3次作为3个扇区
+    if scenario != 'satellite':
+        bs_loc = tf.repeat(bs_loc, 3, axis=0)  # [num_cells*3, 3]
+        num_sectors = 3
+    else:
+        num_sectors = 1
+        
+    # [batch_size, num_cells*num_sectors, 3]
     bs_loc = tf.expand_dims(bs_loc, axis=0)
     bs_loc = tf.tile(bs_loc, [batch_size, 1, 1])
 
-    # BS方向设置
-    bs_yaw = tf.tile([tf.constant(PI/3.0, rdtype),
-                      tf.constant(PI, rdtype),
-                      tf.constant(5.0*PI/3.0, rdtype)], [num_cells])
+    # BS/卫星方向设置
+    if scenario != 'satellite':
+        # 地面场景: 3个扇区的方向
+        bs_yaw = tf.tile([tf.constant(PI/3.0, rdtype),
+                         tf.constant(PI, rdtype),
+                         tf.constant(5.0*PI/3.0, rdtype)], [num_cells])
+    else:
+        # 卫星场景: 指向地面
+        bs_yaw = tf.zeros([num_cells], dtype=rdtype)
+        
     bs_yaw = insert_dims(bs_yaw, 1, axis=0)
     bs_yaw = tf.tile(bs_yaw, [batch_size, 1])
     bs_yaw = insert_dims(bs_yaw, 1, axis=-1)
@@ -402,8 +332,8 @@ def gen_custom_hexgrid_topology(batch_size,
     else:
         bs_downtilt = tf.cast(0, rdtype)
 
-    bs_pitch = tf.fill([batch_size, num_cells*3, 1], bs_downtilt)
-    bs_roll = tf.zeros([batch_size, num_cells*3, 1], rdtype)
+    bs_pitch = tf.fill([batch_size, num_cells*num_sectors, 1], bs_downtilt)
+    bs_roll = tf.zeros([batch_size, num_cells*num_sectors, 1], rdtype)
     bs_orientations = tf.concat([bs_yaw, bs_pitch, bs_roll], axis=-1)
 
     # 放置用户
@@ -414,11 +344,19 @@ def gen_custom_hexgrid_topology(batch_size,
                                     min_ut_height=min_ut_height,
                                     max_ut_height=max_ut_height)
     
-    ut_loc = flatten_dims(ut_loc, num_dims=3, axis=1)
+    # 修改: 根据场景类型决定是否展平维度
+    if scenario == 'satellite':
+        # 卫星场景: 直接展平用户位置
+        ut_loc = tf.reshape(ut_loc, [batch_size, -1, 3])
+    else:
+        # 地面场景: 保持原有逻辑
+        ut_loc = flatten_dims(ut_loc, num_dims=3, axis=1)
+    
     num_ut = ut_loc.shape[1]
 
     bs_virtual_loc = flatten_dims(bs_virtual_loc, num_dims=3, axis=1)
-    bs_virtual_loc = tf.repeat(bs_virtual_loc, 3, axis=2)
+    if scenario != 'satellite':
+        bs_virtual_loc = tf.repeat(bs_virtual_loc, 3, axis=2)
     bs_virtual_loc = tf.transpose(bs_virtual_loc, [0, 2, 1, 3])
 
     # 用户状态
