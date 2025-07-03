@@ -5,7 +5,7 @@ import numpy as np
 # 卫星参数
 SATELLITE_PARAMS = {
     'height': 500000,  # 卫星高度(m)
-    'num_beams': 7,    # 波束数量
+    'num_beams': 50,    # 波束数量
     'tx_power': 40,    # 发射功率(dBW)
     'antenna_gain': 30,  # 天线增益(dBi)
     'frequency': 20e9,  # 载波频率(Hz)
