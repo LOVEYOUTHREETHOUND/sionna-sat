@@ -5,6 +5,7 @@ from typing import List, Tuple, Dict
 import json
 import os
 import matplotlib.pyplot as plt
+from pymap3d import geodetic2ecef  # 添加pymap3d导入
 
 class CoverageGridGenerator:
     def __init__(self):
@@ -68,7 +69,11 @@ class CoverageGridGenerator:
 
     def create_results_directory(self):
         """创建结果目录结构"""
-        results_dir = 'results'
+        # 获取topology目录路径
+        topology_dir = os.path.dirname(os.path.abspath(__file__))
+        results_dir = os.path.join(topology_dir, 'results')
+        
+        # 创建主目录和子目录
         os.makedirs(results_dir, exist_ok=True)
         
         subdirs = ['json', 'plots', 'stats', 'html']
@@ -121,19 +126,26 @@ class CoverageGridGenerator:
                 [bounds['min_lat'], bounds['min_lat'], bounds['max_lat'], bounds['max_lat'], bounds['min_lat']],
                 'k--', label='区域边界')
         
-        # 绘制H3六边形
-        for cell in data['cells']:
-            boundary = h3.cell_to_boundary(cell)
+        # 绘制H3六边形和标注中心点
+        for cell_info in data['cells']:
+            # 绘制六边形边界
+            boundary = h3.cell_to_boundary(cell_info['h3_index'])
             boundary_lats, boundary_lons = zip(*boundary)
+            plt.fill(boundary_lons, boundary_lats, 'lightblue', alpha=0.2)
             
-            if cell in data['hotspot_cells']:
-                plt.fill(boundary_lons, boundary_lats, 'yellow', alpha=0.3, label='热点小区' if cell == data['hotspot_cells'][0] else '')
-            else:
-                plt.fill(boundary_lons, boundary_lats, 'lightblue', alpha=0.2, label='普通小区' if cell == data['cells'][0] else '')
+            # 标注中心点
+            center = cell_info['center_coordinates']['geodetic']
+            plt.plot(center['longitude'], center['latitude'], 'r.', markersize=2)
+            
+            # 为部分小区添加ID标注（避免过密）
+            if np.random.random() < 0.1:  # 随机显示10%的小区ID
+                plt.text(center['longitude'], center['latitude'], 
+                        cell_info['cell_id'], 
+                        fontsize=8, ha='center', va='center')
         
         # 添加标题和标签
         plt.title(f"{self.areas[area_id]['name']}覆盖分析\n"
-                 f"(总小区数: {len(data['cells'])}, 热点小区数: {len(data['hotspot_cells'])})")
+                 f"(总小区数: {len(data['cells'])})")
         plt.xlabel('经度')
         plt.ylabel('纬度')
         plt.grid(True)
@@ -158,26 +170,47 @@ class CoverageGridGenerator:
             cells = self.get_area_cells(area_info['bounds'])
             print(f"小区总数: {len(cells)}")
             
-            # 随机选择热点小区
-            hotspot_count = int(len(cells) * self.hotspot_ratio)
-            hotspot_cells = sorted(np.random.choice(cells, hotspot_count, replace=False))
-            print(f"热点小区数: {len(hotspot_cells)}")
+            # 生成小区ID和中心坐标
+            cell_data = []
+            for idx, cell in enumerate(sorted(cells)):
+                cell_id = f"{area_id}_{idx:04d}"  # 生成小区ID
+                lat, lon = h3.cell_to_latlng(cell)  # 获取中心坐标 [lat, lon]
+                
+                # 转换为ECEF坐标 (假设高度为0米)
+                x, y, z = geodetic2ecef(lat, lon, 0)
+                
+                cell_data.append({
+                    'cell_id': cell_id,
+                    'h3_index': cell,
+                    'center_coordinates': {
+                        'geodetic': {  # 经纬度坐标
+                            'latitude': lat,
+                            'longitude': lon,
+                            'altitude': 0  # 假设在地表
+                        },
+                        'ecef': {  # ECEF坐标
+                            'x': float(x),  # 转换为Python float类型
+                            'y': float(y),
+                            'z': float(z)
+                        }
+                    }
+                })
             
             # 准备数据
             coverage_data = {
                 'area_name': area_info['name'],
-                'cells': sorted(cells),
-                'hotspot_cells': hotspot_cells,
+                'area_id': area_id,
                 'bounds': area_info['bounds'],
                 'resolution': self.h3_resolution,
-                'coverage_radius_km': self.R_c
+                'coverage_radius_km': self.R_c,
+                'cells': cell_data
             }
             
             # 保存JSON数据
             print("保存JSON数据...")
             json_file = os.path.join(results_dir, 'json', f'area_{area_id}_coverage.json')
-            with open(json_file, 'w') as f:
-                json.dump(coverage_data, f, indent=2)
+            with open(json_file, 'w', encoding='utf-8') as f:
+                json.dump(coverage_data, f, indent=2, ensure_ascii=False)
             
             # 生成静态图
             print("生成可视化图...")

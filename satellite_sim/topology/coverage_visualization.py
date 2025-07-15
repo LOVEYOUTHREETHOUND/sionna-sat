@@ -23,8 +23,10 @@ class CoverageVisualizer:
             }
         }
         
+        # 获取topology目录路径
+        topology_dir = os.path.dirname(os.path.abspath(__file__))
         # 创建输出目录
-        self.output_dir = 'visualization_results'
+        self.output_dir = os.path.join(topology_dir, 'results', 'visualization')
         os.makedirs(self.output_dir, exist_ok=True)
 
     def load_coverage_data(self) -> Dict:
