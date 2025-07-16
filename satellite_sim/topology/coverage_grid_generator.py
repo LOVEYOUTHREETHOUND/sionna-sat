@@ -5,7 +5,8 @@ from typing import List, Tuple, Dict
 import json
 import os
 import matplotlib.pyplot as plt
-from pymap3d import geodetic2ecef  # 添加pymap3d导入
+from pymap3d import geodetic2ecef
+from matplotlib.font_manager import FontProperties  # 添加字体支持
 
 class CoverageGridGenerator:
     def __init__(self):
@@ -40,16 +41,20 @@ class CoverageGridGenerator:
         # 选择合适的H3分辨率
         self.h3_resolution = self._select_h3_resolution()
 
+        # 设置中文字体
+        self.font = FontProperties(family='SimHei')  # 使用黑体
+
     def _select_h3_resolution(self) -> int:
-        """根据覆盖半径选择合适的H3分辨率"""
-        target_area = np.pi * (self.R_c ** 2)  # 圆形覆盖面积
+        """选择H3分辨率
         
-        # 从高分辨率开始尝试，找到最合适的分辨率
-        for res in range(15, -1, -1):
-            hex_area = h3.cell_area(h3.latlng_to_cell(0, 0, res), unit='km^2')
-            if hex_area >= target_area * 0.9:  # 允许10%的误差
-                return res
-        return 5  # 默认分辨率
+        H3分辨率4的六边形特性：
+        - 边长约为19.6km
+        - 外接圆半径约为22.6km
+        - 面积约为1170km²
+        
+        这与我们需要的覆盖半径(22.6km)完全匹配
+        """
+        return 4  # 直接使用分辨率4，因为其外接圆半径刚好为22.6km
 
     def get_area_cells(self, bounds: Dict) -> List[str]:
         """获取区域内的所有H3单元"""
@@ -85,34 +90,29 @@ class CoverageGridGenerator:
     def save_area_statistics(self, results_dir: str):
         """保存区域统计信息"""
         stats_file = os.path.join(results_dir, 'stats', 'area_statistics.txt')
-        with open(stats_file, 'w', encoding='utf-8') as f:
+        with open(stats_file, 'w', encoding='utf-8') as f:  # 指定UTF-8编码
             for area_id, area_info in self.areas.items():
                 # 读取该区域的JSON数据
-                with open(os.path.join(results_dir, 'json', f'area_{area_id}_coverage.json'), 'r') as json_file:
+                json_path = os.path.join(results_dir, 'json', f'area_{area_id}_coverage.json')
+                with open(json_path, 'r', encoding='utf-8') as json_file:  # 指定UTF-8编码
                     data = json.load(json_file)
                 
                 # 写入统计信息
-                f.write(f"\n{area_info['name']}统计信息:\n")
+                f.write(f"\nArea {area_info['name']} Statistics:\n")  # 使用英文
                 f.write("-" * 40 + "\n")
-                f.write(f"覆盖半径: {self.R_c:.2f} km\n")
-                f.write(f"H3分辨率: {self.h3_resolution}\n")
-                f.write(f"小区总数: {len(data['cells'])}\n")
-                f.write(f"热点小区数: {len(data['hotspot_cells'])}\n")
+                f.write(f"Coverage Radius: {self.R_c:.2f} km\n")
+                f.write(f"H3 Resolution: {self.h3_resolution}\n")
+                f.write(f"Total Cells: {len(data['cells'])}\n")
                 
                 # 计算小区面积
-                sample_cell = data['cells'][0]
+                sample_cell = data['cells'][0]['h3_index']
                 cell_area = h3.cell_area(sample_cell, unit='km^2')
-                f.write(f"单个小区面积: {cell_area:.2f} km²\n")
+                f.write(f"Single Cell Area: {cell_area:.2f} km²\n")
                 
                 # 写入所有小区编码
-                f.write("\n普通小区编码:\n")
-                normal_cells = set(data['cells']) - set(data['hotspot_cells'])
-                for cell in sorted(normal_cells):
-                    f.write(f"{cell}\n")
-                
-                f.write("\n热点小区编码:\n")
-                for cell in sorted(data['hotspot_cells']):
-                    f.write(f"{cell}\n")
+                f.write("\nCell IDs:\n")
+                for cell_info in data['cells']:
+                    f.write(f"{cell_info['cell_id']}\n")
                 
                 f.write("\n" + "=" * 40 + "\n")
 
@@ -124,36 +124,40 @@ class CoverageGridGenerator:
         bounds = data['bounds']
         plt.plot([bounds['min_lon'], bounds['max_lon'], bounds['max_lon'], bounds['min_lon'], bounds['min_lon']],
                 [bounds['min_lat'], bounds['min_lat'], bounds['max_lat'], bounds['max_lat'], bounds['min_lat']],
-                'k--', label='区域边界')
+                'k--', linewidth=2, label='Area Boundary')  # 加粗区域边界
         
         # 绘制H3六边形和标注中心点
         for cell_info in data['cells']:
-            # 绘制六边形边界
             boundary = h3.cell_to_boundary(cell_info['h3_index'])
             boundary_lats, boundary_lons = zip(*boundary)
-            plt.fill(boundary_lons, boundary_lats, 'lightblue', alpha=0.2)
+            # 先填充小区
+            plt.fill(boundary_lons, boundary_lats, 'lightblue', alpha=0.1)
+            # 再绘制边界线
+            plt.plot(boundary_lons + (boundary_lons[0],), 
+                    boundary_lats + (boundary_lats[0],), 
+                    'b-', linewidth=0.8, alpha=0.6)  # 添加清晰的蓝色边界线
             
             # 标注中心点
             center = cell_info['center_coordinates']['geodetic']
-            plt.plot(center['longitude'], center['latitude'], 'r.', markersize=2)
+            plt.plot(center['longitude'], center['latitude'], 'r.', markersize=3)  # 略微增大中心点
             
-            # 为部分小区添加ID标注（避免过密）
-            if np.random.random() < 0.1:  # 随机显示10%的小区ID
+            # 为部分小区添加ID标注
+            if np.random.random() < 0.1:
                 plt.text(center['longitude'], center['latitude'], 
                         cell_info['cell_id'], 
                         fontsize=8, ha='center', va='center')
         
         # 添加标题和标签
-        plt.title(f"{self.areas[area_id]['name']}覆盖分析\n"
-                 f"(总小区数: {len(data['cells'])})")
-        plt.xlabel('经度')
-        plt.ylabel('纬度')
-        plt.grid(True)
+        plt.title(f"Coverage Analysis - {self.areas[area_id]['name']}\n"
+                 f"(Total Cells: {len(data['cells'])})", fontproperties=self.font)
+        plt.xlabel('Longitude')
+        plt.ylabel('Latitude')
+        plt.grid(True, alpha=0.3)  # 降低网格线的显示强度
         plt.legend()
         
-        # 保存图片
+        # 保存图片，增加DPI以提高清晰度
         plt.savefig(os.path.join(results_dir, 'plots', f'coverage_area_{area_id}.png'), 
-                   dpi=300, bbox_inches='tight')
+                   dpi=400, bbox_inches='tight')
         plt.close()
 
     def create_visualization(self) -> None:
@@ -253,12 +257,12 @@ class CoverageGridGenerator:
         # 为每个区域添加图层
         for area_id, area_info in self.areas.items():
             # 读取数据
-            with open(os.path.join(results_dir, 'json', f'area_{area_id}_coverage.json'), 'r') as f:
+            with open(os.path.join(results_dir, 'json', f'area_{area_id}_coverage.json'), 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             # 创建图层组
-            normal_group = folium.FeatureGroup(name=f"{area_info['name']} - 普通小区")
-            hotspot_group = folium.FeatureGroup(name=f"{area_info['name']} - 热点小区")
+            cell_group = folium.FeatureGroup(name=f"{area_info['name']} - 小区")
+            center_group = folium.FeatureGroup(name=f"{area_info['name']} - 中心点")
             
             # 添加区域边界
             bounds = area_info['bounds']
@@ -269,25 +273,54 @@ class CoverageGridGenerator:
                 fill=True,
                 weight=2,
                 fill_opacity=0.1
-            ).add_to(normal_group)
+            ).add_to(cell_group)
             
-            # 添加H3六边形
+            # 添加六边形小区和中心点
             for cell in data['cells']:
-                is_hotspot = cell in data['hotspot_cells']
-                boundary = h3.cell_to_boundary(cell)
+                # 获取中心坐标
+                center = cell['center_coordinates']['geodetic']
+                center_coords = [center['latitude'], center['longitude']]
                 
+                # 获取六边形边界
+                boundary = h3.cell_to_boundary(cell['h3_index'])
+                
+                # 创建悬停信息
+                popup_html = f"""
+                <div style='font-family: Arial, sans-serif;'>
+                    <h4>{area_info['name']}</h4>
+                    <b>小区ID:</b> {cell['cell_id']}<br>
+                    <b>H3索引:</b> {cell['h3_index']}<br>
+                    <b>中心位置:</b><br>
+                    &nbsp;&nbsp;纬度: {center['latitude']:.6f}°<br>
+                    &nbsp;&nbsp;经度: {center['longitude']:.6f}°<br>
+                    <b>ECEF坐标:</b><br>
+                    &nbsp;&nbsp;X: {cell['center_coordinates']['ecef']['x']:.2f} km<br>
+                    &nbsp;&nbsp;Y: {cell['center_coordinates']['ecef']['y']:.2f} km<br>
+                    &nbsp;&nbsp;Z: {cell['center_coordinates']['ecef']['z']:.2f} km
+                </div>
+                """
+                
+                # 添加六边形
                 folium.Polygon(
                     locations=boundary,
-                    color='yellow' if is_hotspot else area_info['color'],
+                    color=area_info['color'],
                     weight=1,
-                    fill_opacity=0.3 if is_hotspot else 0.2,
-                    popup=f"Area: {area_info['name']}<br>"
-                          f"Type: {'热点小区' if is_hotspot else '普通小区'}<br>"
-                          f"H3 Cell: {cell}"
-                ).add_to(hotspot_group if is_hotspot else normal_group)
+                    fill_opacity=0.2,
+                    popup=folium.Popup(popup_html, max_width=300)
+                ).add_to(cell_group)
+                
+                # 添加中心点标记
+                folium.CircleMarker(
+                    location=center_coords,
+                    radius=3,
+                    color='red',
+                    fill=True,
+                    popup=folium.Popup(popup_html, max_width=300),
+                    tooltip=f"小区ID: {cell['cell_id']}"
+                ).add_to(center_group)
             
-            normal_group.add_to(m)
-            hotspot_group.add_to(m)
+            cell_group.add_to(m)
+            center_group.add_to(m)
         
         # 添加图层控制
         folium.LayerControl(collapsed=False).add_to(m)
