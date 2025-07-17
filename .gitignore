@@ -56,5 +56,6 @@ events.out.tfevents.*
 # Sionna specific
 *.mat
 model_weights/
-results/ 
+results/html/
 /doc
+satellite_sim/data/

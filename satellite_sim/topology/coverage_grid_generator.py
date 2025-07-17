@@ -72,11 +72,70 @@ class CoverageGridGenerator:
         
         return list(cells)
 
+    def generate_random_users_in_cell(self, h3_index: str, num_users: int = 10) -> List[Dict]:
+        """在六边形小区内生成随机用户
+        
+        Args:
+            h3_index: H3小区索引
+            num_users: 要生成的用户数量
+            
+        Returns:
+            users: 包含用户位置信息的列表
+        """
+        # 获取六边形边界点
+        boundary = h3.cell_to_boundary(h3_index)
+        
+        # 将边界点转换为numpy数组以便计算
+        boundary_array = np.array(boundary)
+        
+        # 计算边界的最小和最大值
+        min_lat, max_lat = np.min(boundary_array[:, 0]), np.max(boundary_array[:, 0])
+        min_lon, max_lon = np.min(boundary_array[:, 1]), np.max(boundary_array[:, 1])
+        
+        users = []
+        attempts = 0
+        max_attempts = num_users * 100  # 设置最大尝试次数以避免无限循环
+        
+        while len(users) < num_users and attempts < max_attempts:
+            # 在边界框内随机生成点
+            lat = np.random.uniform(min_lat, max_lat)
+            lon = np.random.uniform(min_lon, max_lon)
+            
+            # 检查点是否在六边形内
+            point_cell = h3.latlng_to_cell(lat, lon, h3.get_resolution(h3_index))
+            
+            if point_cell == h3_index:
+                # 计算ECEF坐标
+                x, y, z = geodetic2ecef(lat, lon, 0)
+                
+                users.append({
+                    'user_id': f'USER_{len(users):03d}',
+                    'coordinates': {
+                        'geodetic': {
+                            'latitude': float(lat),
+                            'longitude': float(lon),
+                            'altitude': 0
+                        },
+                        'ecef': {
+                            'x': float(x),
+                            'y': float(y),
+                            'z': float(z)
+                        }
+                    }
+                })
+            
+            attempts += 1
+        
+        return users
+
     def create_results_directory(self):
         """创建结果目录结构"""
-        # 获取topology目录路径
-        topology_dir = os.path.dirname(os.path.abspath(__file__))
-        results_dir = os.path.join(topology_dir, 'results')
+        # 获取satellite_sim目录路径
+        current_dir = os.path.dirname(os.path.abspath(__file__))  # topology目录
+        satellite_sim_dir = os.path.dirname(current_dir)  # satellite_sim目录
+        
+        # 创建data/topology_result目录
+        results_dir = os.path.join(satellite_sim_dir, 'data', 'topology_result')
         
         # 创建主目录和子目录
         os.makedirs(results_dir, exist_ok=True)
@@ -183,6 +242,9 @@ class CoverageGridGenerator:
                 # 转换为ECEF坐标 (假设高度为0米)
                 x, y, z = geodetic2ecef(lat, lon, 0)
                 
+                # 在小区内生成随机用户
+                users = self.generate_random_users_in_cell(cell)
+                
                 cell_data.append({
                     'cell_id': cell_id,
                     'h3_index': cell,
@@ -193,11 +255,12 @@ class CoverageGridGenerator:
                             'altitude': 0  # 假设在地表
                         },
                         'ecef': {  # ECEF坐标
-                            'x': float(x),  # 转换为Python float类型
+                            'x': float(x),
                             'y': float(y),
                             'z': float(z)
                         }
-                    }
+                    },
+                    'users': users  # 添加用户信息
                 })
             
             # 准备数据
@@ -205,7 +268,6 @@ class CoverageGridGenerator:
                 'area_name': area_info['name'],
                 'area_id': area_id,
                 'bounds': area_info['bounds'],
-                'resolution': self.h3_resolution,
                 'coverage_radius_km': self.R_c,
                 'cells': cell_data
             }
@@ -263,6 +325,7 @@ class CoverageGridGenerator:
             # 创建图层组
             cell_group = folium.FeatureGroup(name=f"{area_info['name']} - 小区")
             center_group = folium.FeatureGroup(name=f"{area_info['name']} - 中心点")
+            user_group = folium.FeatureGroup(name=f"{area_info['name']} - 用户")
             
             # 添加区域边界
             bounds = area_info['bounds']
@@ -275,7 +338,7 @@ class CoverageGridGenerator:
                 fill_opacity=0.1
             ).add_to(cell_group)
             
-            # 添加六边形小区和中心点
+            # 添加六边形小区、中心点和用户
             for cell in data['cells']:
                 # 获取中心坐标
                 center = cell['center_coordinates']['geodetic']
@@ -284,8 +347,8 @@ class CoverageGridGenerator:
                 # 获取六边形边界
                 boundary = h3.cell_to_boundary(cell['h3_index'])
                 
-                # 创建悬停信息
-                popup_html = f"""
+                # 创建小区悬停信息
+                cell_popup_html = f"""
                 <div style='font-family: Arial, sans-serif;'>
                     <h4>{area_info['name']}</h4>
                     <b>小区ID:</b> {cell['cell_id']}<br>
@@ -296,7 +359,8 @@ class CoverageGridGenerator:
                     <b>ECEF坐标:</b><br>
                     &nbsp;&nbsp;X: {cell['center_coordinates']['ecef']['x']:.2f} km<br>
                     &nbsp;&nbsp;Y: {cell['center_coordinates']['ecef']['y']:.2f} km<br>
-                    &nbsp;&nbsp;Z: {cell['center_coordinates']['ecef']['z']:.2f} km
+                    &nbsp;&nbsp;Z: {cell['center_coordinates']['ecef']['z']:.2f} km<br>
+                    <b>用户数量:</b> {len(cell['users'])}
                 </div>
                 """
                 
@@ -306,7 +370,7 @@ class CoverageGridGenerator:
                     color=area_info['color'],
                     weight=1,
                     fill_opacity=0.2,
-                    popup=folium.Popup(popup_html, max_width=300)
+                    popup=folium.Popup(cell_popup_html, max_width=300)
                 ).add_to(cell_group)
                 
                 # 添加中心点标记
@@ -315,12 +379,58 @@ class CoverageGridGenerator:
                     radius=3,
                     color='red',
                     fill=True,
-                    popup=folium.Popup(popup_html, max_width=300),
+                    popup=folium.Popup(cell_popup_html, max_width=300),
                     tooltip=f"小区ID: {cell['cell_id']}"
                 ).add_to(center_group)
+                
+                # 添加用户标记
+                for user in cell['users']:
+                    user_coords = [
+                        user['coordinates']['geodetic']['latitude'],
+                        user['coordinates']['geodetic']['longitude']
+                    ]
+                    
+                    # 创建用户悬停信息
+                    user_popup_html = f"""
+                    <div style='font-family: Arial, sans-serif;'>
+                        <h4>用户信息</h4>
+                        <b>用户ID:</b> {user['user_id']}<br>
+                        <b>所属小区:</b> {cell['cell_id']}<br>
+                        <b>位置:</b><br>
+                        &nbsp;&nbsp;纬度: {user['coordinates']['geodetic']['latitude']:.6f}°<br>
+                        &nbsp;&nbsp;经度: {user['coordinates']['geodetic']['longitude']:.6f}°<br>
+                        <b>ECEF坐标:</b><br>
+                        &nbsp;&nbsp;X: {user['coordinates']['ecef']['x']:.2f} km<br>
+                        &nbsp;&nbsp;Y: {user['coordinates']['ecef']['y']:.2f} km<br>
+                        &nbsp;&nbsp;Z: {user['coordinates']['ecef']['z']:.2f} km
+                    </div>
+                    """
+                    
+                    # 创建三角形图标
+                    triangle_icon = folium.DivIcon(
+                        html=f'''
+                        <div style="
+                            width: 0; 
+                            height: 0; 
+                            border-left: 6px solid transparent;
+                            border-right: 6px solid transparent;
+                            border-bottom: 10px solid black;
+                            transform: translate(-6px, -10px);">
+                        </div>
+                        '''
+                    )
+                    
+                    # 添加用户标记
+                    folium.Marker(
+                        location=user_coords,
+                        icon=triangle_icon,
+                        popup=folium.Popup(user_popup_html, max_width=300),
+                        tooltip=f"用户ID: {user['user_id']}"
+                    ).add_to(user_group)
             
             cell_group.add_to(m)
             center_group.add_to(m)
+            user_group.add_to(m)
         
         # 添加图层控制
         folium.LayerControl(collapsed=False).add_to(m)

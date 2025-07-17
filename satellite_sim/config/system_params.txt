@@ -1,0 +1,21 @@
+# 基础参数（论文表4）
+carrier_freq = 3.65e9       # 载频 3.65 GHz
+bandwidth = 30e6             # 系统带宽 30 MHz
+eirp_density = 41.41         # EIRP密度 41.41 dBW/MHz
+g_over_t = -33.62            # G/T值 -33.62 dB/K
+receiver_gain = 0.0          # 接收天线增益 (dB)
+scintillation_loss = 5.5     # 闪烁损耗 (dB)
+beams_per_sat = 50            # 每颗卫星的波束数目
+        
+# 物理常数
+boltzmann_constant = 1.380649e-23  # 玻尔兹曼常数 (J/K)
+speed_of_light = 3e8           # 光速 (m/s)
+        
+# 计算波长
+wavelength = self.speed_of_light / self.carrier_freq
+        
+# 计算天线参数 (基于波束数目)
+antenna_diameter = 
+        
+计算ka参数 (用于增益衰减计算)
+ka = (2 * np.pi / self.wavelength) * (self.antenna_diameter / 2)
