@@ -59,3 +59,4 @@ model_weights/
 results/html/
 /doc
 satellite_sim/data/
+satellite_sim/simulation_results

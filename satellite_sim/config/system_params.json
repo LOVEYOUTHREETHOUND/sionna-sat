@@ -1,0 +1,20 @@
+{
+  "basic_params": {
+    "carrier_freq": 3.65e9,
+    "bandwidth": 30e6,
+    "eirp_density": 41.41,
+    "g_over_t": -33.62,
+    "receiver_gain": 0.0,
+    "scintillation_loss": 5.5,
+    "beams_per_sat": 50
+  },
+  "physical_constants": {
+    "boltzmann_constant": 1.380649e-23,
+    "speed_of_light": 3e8
+  },
+  "derived_params": {
+    "wavelength": null,
+    "antenna_diameter": null,
+    "ka": null
+  }
+}
