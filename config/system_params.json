@@ -15,6 +15,6 @@
   "derived_params": {
     "wavelength": null,
     "antenna_diameter": null,
-    "ka": null
+    "ka": 31.4
   }
 }

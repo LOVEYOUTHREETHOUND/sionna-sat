@@ -3,6 +3,13 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import h3
+import json
+import folium
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+import time
+import random
 
 class SatelliteAnalyzer:
     def __init__(self, sat_file_path):
@@ -254,10 +261,10 @@ class SatelliteAnalyzer:
         
         # Set equal aspect ratio
         ax.set_box_aspect([1,1,1])
-        
+        ax.view_init(elev=20, azim=90)
         # Save figure
-        plt.savefig('satellite_distribution.png', dpi=300, bbox_inches='tight')
-        print("\nSatellite distribution plot saved as: satellite_distribution.png")
+        plt.savefig(os.path.join('results', 'plots', 'satellite_distribution.png'), dpi=300, bbox_inches='tight')
+        print("\nSatellite distribution plot saved as: results/plots/satellite_distribution.png")
         
         # Show figure
         plt.show()
@@ -326,16 +333,16 @@ class SatelliteAnalyzer:
         
         # Set equal aspect ratio
         ax.set_box_aspect([1,1,1])
-        
+        ax.view_init(elev=20, azim=90)
         # Save figure
-        plt.savefig('satellite_complete_trajectories.png', dpi=300, bbox_inches='tight')
-        print("\nComplete trajectories plot saved as: satellite_complete_trajectories.png")
+        plt.savefig(os.path.join('results', 'plots', 'satellite_complete_trajectories.png'), dpi=300, bbox_inches='tight')
+        print("\nComplete trajectories plot saved as: results/plots/satellite_complete_trajectories.png")
         
         # Show figure
         plt.show()
 
-    def plot_multi_targets_3d(self, target_sat_indices, same_plane_dict, diff_plane_dict, left_right_dict, time_idx=0):
-        """多目标卫星的3D分布图，每个目标卫星的左右用不同颜色区分"""
+    def plot_multi_targets_3d(self, target_sat_indices, same_plane_dict, diff_plane_dict, left_right_dict, time_idx=0, candidate_cells=None):
+        """多目标卫星的3D分布图，每个目标卫星的左右用不同颜色区分，支持显示候选小区"""
         fig = plt.figure(figsize=(12, 12))
         ax = fig.add_subplot(111, projection='3d')
         r = 6371000
@@ -391,14 +398,21 @@ class SatelliteAnalyzer:
                 ax.scatter(sat_pos['x'], sat_pos['y'], sat_pos['z'],
                            color=color_map[i][1], marker='^', s=100, label=f'Target {i+1} Right' if (i, 'right') not in all_plotted else None)
                 all_plotted.add((i, 'right'))
+        # 新增：显示候选小区
+        if candidate_cells is not None and len(candidate_cells) > 0:
+            cell_x = [cell['ecef']['x'] for cell in candidate_cells]
+            cell_y = [cell['ecef']['y'] for cell in candidate_cells]
+            cell_z = [cell['ecef']['z'] for cell in candidate_cells]
+            ax.scatter(cell_x, cell_y, cell_z, c='blue', alpha=0.4, s=40, label='Candidate Cells')
         ax.set_xlabel('X (m)')
         ax.set_ylabel('Y (m)')
         ax.set_zlabel('Z (m)')
         ax.set_title('Multi-Target Satellite Distribution (ECEF Coordinates)')
         ax.legend()
         ax.set_box_aspect([1,1,1])
-        plt.savefig('satellite_multi_target_distribution.png', dpi=300, bbox_inches='tight')
-        print("\nMulti-target satellite distribution plot saved as: satellite_multi_target_distribution.png")
+        ax.view_init(elev=20, azim=90)
+        plt.savefig(os.path.join('results', 'plots', 'satellite_multi_target_distribution.png'), dpi=300, bbox_inches='tight')
+        print("\nMulti-target satellite distribution plot saved as: results/plots/satellite_multi_target_distribution.png")
         plt.show()
 
     def plot_targets_only(self, target_sat_indices, time_idx=0):
@@ -429,8 +443,9 @@ class SatelliteAnalyzer:
         ax.set_title('Three Target Satellites (ECEF Coordinates)')
         ax.legend()
         ax.set_box_aspect([1,1,1])
-        plt.savefig('three_target_satellites.png', dpi=300, bbox_inches='tight')
-        print("\nThree target satellites plot saved as: three_target_satellites.png")
+        ax.view_init(elev=20, azim=90)
+        plt.savefig(os.path.join('results', 'plots', 'three_target_satellites.png'), dpi=300, bbox_inches='tight')
+        print("\nThree target satellites plot saved as: results/plots/three_target_satellites.png")
         plt.show()
 
     def plot_single_target_neighbors(self, target_sat, same_plane, diff_plane, left_sats, right_sats, time_idx=0, idx=1):
@@ -482,8 +497,9 @@ class SatelliteAnalyzer:
         ax.set_title(f'Target Satellite {target_sat} and 20 Nearest Neighbors')
         ax.legend()
         ax.set_box_aspect([1,1,1])
-        plt.savefig(f'target_{idx}_neighbors.png', dpi=300, bbox_inches='tight')
-        print(f"\nTarget satellite {target_sat} neighbors plot saved as: target_{idx}_neighbors.png")
+        ax.view_init(elev=20, azim=90)
+        plt.savefig(os.path.join('results', 'plots', f'target_{idx}_neighbors.png'), dpi=300, bbox_inches='tight')
+        print(f"\nTarget satellite {target_sat} neighbors plot saved as: results/plots/target_{idx}_neighbors.png")
         plt.show()
 
     def find_three_closest_from_nearest(self, center_sat_idx=1, time_idx=0, n_nearest=20):
@@ -527,6 +543,84 @@ class SatelliteAnalyzer:
                 best_triplet = (candidate_indices[i], candidate_indices[j], candidate_indices[k])
         return list(best_triplet)
 
+    @staticmethod
+    def geodetic_to_ecef(lat, lon, alt):
+        """WGS84地理坐标转ECEF"""
+        a = 6378137.0
+        e2 = 6.69437999014e-3
+        lat_rad = np.radians(lat)
+        lon_rad = np.radians(lon)
+        N = a / np.sqrt(1 - e2 * np.sin(lat_rad)**2)
+        x = (N + alt) * np.cos(lat_rad) * np.cos(lon_rad)
+        y = (N + alt) * np.cos(lat_rad) * np.sin(lon_rad)
+        z = (N * (1 - e2) + alt) * np.sin(lat_rad)
+        return x, y, z
+
+
+def random_users_in_cell(h3_index, num_users=10):
+    boundary = h3.cell_to_boundary(h3_index)
+    boundary_array = np.array(boundary)
+    min_lat, max_lat = np.min(boundary_array[:, 0]), np.max(boundary_array[:, 0])
+    min_lon, max_lon = np.min(boundary_array[:, 1]), np.max(boundary_array[:, 1])
+    users = []
+    attempts = 0
+    max_attempts = num_users * 100
+    while len(users) < num_users and attempts < max_attempts:
+        lat = np.random.uniform(min_lat, max_lat)
+        lon = np.random.uniform(min_lon, max_lon)
+        point_cell = h3.latlng_to_cell(lat, lon, h3.get_resolution(h3_index))
+        if point_cell == h3_index:
+            x, y, z = SatelliteAnalyzer.geodetic_to_ecef(lat, lon, 0)
+            users.append({
+                'user_id': f'USER_{len(users):03d}',
+                'geodetic': {'latitude': float(lat), 'longitude': float(lon), 'altitude': 0},
+                'ecef': {'x': float(x), 'y': float(y), 'z': float(z)}
+            })
+        attempts += 1
+    return users
+
+
+def plot_candidate_cells_map(candidate_cells, output_png_path, target_cell_id=None, users=None):
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon as MplPolygon
+    from matplotlib.collections import PatchCollection
+    if not candidate_cells:
+        print("No candidate cells to plot.")
+        return
+    fig, ax = plt.subplots(figsize=(12, 8))
+    patches = []
+    for cell in candidate_cells:
+        h3_id = cell['cell_id']
+        boundary = h3.cell_to_boundary(h3_id)
+        poly = MplPolygon(boundary, closed=True)
+        patches.append(poly)
+    p = PatchCollection(patches, facecolor='blue', alpha=0.2, edgecolor='blue', linewidths=0.5)
+    ax.add_collection(p)
+    # 目标小区
+    if target_cell_id is not None:
+        for cell in candidate_cells:
+            if cell['cell_id'] == target_cell_id:
+                boundary = h3.cell_to_boundary(cell['cell_id'])
+                poly = MplPolygon(boundary, closed=True, facecolor='red', alpha=0.4, edgecolor='red', linewidth=1.5)
+                ax.add_patch(poly)
+                break
+    # 用户点
+    if users is not None:
+        user_lats = [u['geodetic']['latitude'] for u in users]
+        user_lons = [u['geodetic']['longitude'] for u in users]
+        ax.scatter(user_lons, user_lats, c='black', s=40, marker='o', label='Users')
+    # 设置范围
+    lats = [cell['geodetic']['latitude'] for cell in candidate_cells]
+    lons = [cell['geodetic']['longitude'] for cell in candidate_cells]
+    ax.set_xlim(min(lons)-1, max(lons)+1)
+    ax.set_ylim(min(lats)-1, max(lats)+1)
+    ax.set_xlabel('Longitude')
+    ax.set_ylabel('Latitude')
+    ax.set_title('Candidate Cells Map')
+    plt.savefig(output_png_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Candidate cells map saved as: {output_png_path}")
+
 
 def main():
     # Configure file path
@@ -562,9 +656,36 @@ def main():
     for v in diff_plane_dict.values():
         all_sats.update(v)
     positions_df = analyzer.get_positions_for_duration(list(all_sats))
-    output_file = 'satellite_positions_10min.csv'
+    output_file = os.path.join('results', 'excel', 'satellite_positions_10min.csv')
     positions_df.to_csv(output_file, index=False)
     print(f"\nPosition data saved to: {output_file}")
+    # --- 新版：仅用最早时刻星下点小区 ---
+    print("\nSelecting candidate cells by sub-satellite points at initial time (h3 resolution=4)...")
+    candidate_cell_set = set()
+    relevant_sat_indices = list(all_sats)
+    t = 0  # 只取第一个时刻
+    for sat_idx in relevant_sat_indices:
+        row = analyzer.positions[sat_idx].iloc[t]
+        x, y, z = row['x'], row['y'], row['z']
+        r = np.sqrt(x**2 + y**2 + z**2)
+        lat = np.degrees(np.arcsin(z / r))
+        lon = np.degrees(np.arctan2(y, x))
+        cell = h3.latlng_to_cell(lat, lon, 4)
+        candidate_cell_set.add(cell)
+    candidate_cells = []
+    for h3_id in candidate_cell_set:
+        lat, lon = h3.cell_to_latlng(h3_id)
+        alt = 0
+        cell_ecef = np.array(analyzer.geodetic_to_ecef(lat, lon, alt))
+        candidate_cells.append({
+            "cell_id": h3_id,
+            "geodetic": {"latitude": lat, "longitude": lon, "altitude": 0},
+            "ecef": {"x": cell_ecef[0], "y": cell_ecef[1], "z": cell_ecef[2]}
+        })
+    json_path = os.path.join('results', 'json', 'candidate_cells.json')
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(candidate_cells, f, ensure_ascii=False, indent=2)
+    print(f"Candidate cell info saved to: {json_path}")
     print("\nData Preview:")
     print(positions_df.head())
     print("\nPlotting three target satellites only...")
@@ -580,7 +701,37 @@ def main():
             idx=i+1
         )
     print("\nPlotting multi-target satellite distribution...")
-    analyzer.plot_multi_targets_3d(target_sats, same_plane_dict, diff_plane_dict, left_right_dict)
+    analyzer.plot_multi_targets_3d(target_sats, same_plane_dict, diff_plane_dict, left_right_dict, candidate_cells=candidate_cells)
+    # --- 新增：目标小区与用户撒点 ---
+    json_path = os.path.join('results', 'json', 'candidate_cells.json')
+    target_cell_info = None
+    users = None
+    if os.path.exists(json_path):
+        with open(json_path, 'r', encoding='utf-8') as f:
+            candidate_cells = json.load(f)
+        # 随机选取目标小区
+        target_cell = random.choice(candidate_cells)
+        target_cell_id = target_cell['cell_id']
+        # 在目标小区内撒点10个用户
+        users = random_users_in_cell(target_cell_id, 10)
+        # 记录目标小区中心ECEF和用户ECEF
+        target_cell_ecef = target_cell['ecef']
+        users_ecef = [u['ecef'] for u in users]
+        target_cell_info = {
+            'target_cell_id': target_cell_id,
+            'target_cell_ecef': target_cell_ecef,
+            'users': users
+        }
+        # 保存json
+        out_json = os.path.join('results', 'json', 'target_cell_users.json')
+        with open(out_json, 'w', encoding='utf-8') as f:
+            json.dump(target_cell_info, f, ensure_ascii=False, indent=2)
+        print(f"Target cell and users info saved to: {out_json}")
+    # --- 新增：绘制候选小区平面图 ---
+    if os.path.exists(json_path):
+        plot_candidate_cells_map(candidate_cells, os.path.join('results', 'plots', 'candidate_cells_map.png'),
+                                target_cell_id=target_cell_info['target_cell_id'] if target_cell_info else None,
+                                users=target_cell_info['users'] if target_cell_info else None)
 
 if __name__ == '__main__':
     main() 
