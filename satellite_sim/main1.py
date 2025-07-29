@@ -1,20 +1,13 @@
 import numpy as np
 import json
 import os
-import random
-import time
-import matplotlib.pyplot as plt
-import seaborn as sns
-from torch.utils.tensorboard import SummaryWriter
-import torch
-from concurrent.futures import ProcessPoolExecutor
 import pandas as pd
 from datetime import datetime
 
 class StaticData:
     def __init__(self, system_param_path, satellite_result_path, topology_json_dir, 
                  num_sats=1800, num_timesteps=None, 
-                 sat_indices=None, sc_indices=None):  # 支持索引列表
+                 sat_range=None, sc_range=None):  # 添加范围参数
         """初始化StaticData
         Args:
             system_param_path: 系统参数文件路径
@@ -22,8 +15,8 @@ class StaticData:
             topology_json_dir: 拓扑JSON文件目录
             num_sats: 卫星总数，默认1800
             num_timesteps: 时隙数，默认None表示加载所有时隙
-            sat_indices: 要仿真的卫星索引列表，默认None表示所有卫星
-            sc_indices: 要仿真的SC索引列表，默认None表示所有SC
+            sat_range: 要仿真的卫星范围，格式(start, end)，默认None表示所有卫星
+            sc_range: 要仿真的SC范围，格式(start, end)，默认None表示所有SC
         """
         # 1. 加载系统参数
         self.system_params = self._load_system_params(system_param_path)
@@ -33,24 +26,25 @@ class StaticData:
             satellite_result_path, 
             num_sats, 
             num_timesteps,
-            sat_indices=sat_indices
+            sat_range
         )
 
         # 3. 加载两个目标区域各自的SC中心
         self.sc_centers = self._load_sc_centers(topology_json_dir)
-        if sc_indices is not None:
-            self.sc_centers = self.sc_centers[sc_indices]
+        if sc_range is not None:
+            start, end = sc_range
+            self.sc_centers = self.sc_centers[start:end]
 
         # 4. 加载所有用户的ECEF位置信息和用户-SC映射关系
         self.user_positions, self.user_sc_mapping = self._load_user_positions(topology_json_dir)
-        if sc_indices is not None:
-            # 筛选在选定SC索引内的用户
-            valid_users = np.isin(self.user_sc_mapping, sc_indices)
+        if sc_range is not None:
+            # 筛选在选定SC范围内的用户
+            start, end = sc_range
+            valid_users = np.where((self.user_sc_mapping >= start) & (self.user_sc_mapping < end))[0]
             self.user_positions = self.user_positions[valid_users]
             self.user_sc_mapping = self.user_sc_mapping[valid_users]
-            # 重新映射SC索引（映射到0~num_scs-1）
-            sc_idx_map = {old: new for new, old in enumerate(sc_indices)}
-            self.user_sc_mapping = np.array([sc_idx_map[x] for x in self.user_sc_mapping])
+            # 重新映射SC索引
+            self.user_sc_mapping -= start
 
         # 5. 预计算系统参数
         # 计算EIRP
@@ -116,17 +110,20 @@ class StaticData:
         
         return all_params
 
-    def _load_satellite_positions(self, sat_path, num_sats=1800, num_timesteps=None, sat_range=None, sat_indices=None):
+    def _load_satellite_positions(self, sat_path, num_sats=1800, num_timesteps=None, sat_range=None):
         """加载卫星位置数据
         Args:
             sat_path: 卫星位置数据文件路径
             num_sats: 卫星总数
             num_timesteps: 要加载的时隙数，None表示全部加载
-            sat_range: 已废弃
-            sat_indices: 要加载的卫星索引列表，None表示加载所有卫星
+            sat_range: 要加载的卫星范围(start, end)，None表示加载所有卫星
         Returns:
             numpy array of shape [num_sats, num_timesteps, 3] containing ECEF positions
         """
+        # 确定要加载的卫星范围
+        start_sat = 0 if sat_range is None else sat_range[0]
+        end_sat = num_sats if sat_range is None else sat_range[1]
+        
         # 读取整个文件
         with open(sat_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
@@ -199,9 +196,10 @@ class StaticData:
         # 确保所有卫星都有相同数量的时间点
         min_timesteps = min(len(pos) for pos in all_sat_pos)
         all_sat_pos = [pos[:min_timesteps] for pos in all_sat_pos]
-        # 只返回指定索引的卫星数据
-        if sat_indices is not None:
-            all_sat_pos = [all_sat_pos[i] for i in sat_indices]
+        
+        # 只返回指定范围内的卫星数据
+        all_sat_pos = all_sat_pos[start_sat:end_sat]
+        
         return np.stack(all_sat_pos, axis=0)
 
     def _load_sc_centers(self, json_dir):
@@ -688,18 +686,16 @@ class SimulateTimeslot:
 
 
 class SimulationResultWriter:
-    def __init__(self, num_users, num_timeslots, num_sats, num_scs, result_dir_root='simulation_results'):
+    def __init__(self, num_users, num_timeslots, result_dir_root='simulation_results'):
         # 生成仿真开始时间戳
-        import datetime
-        now = datetime.datetime.now()
-        self.result_dir = os.path.join(result_dir_root, now.strftime('%Y%m%d_%H%M%S'))
-        os.makedirs(self.result_dir, exist_ok=True)
-        self.sinr_table = []
-        self.detail_records = []
+        self.start_time_str = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.num_users = num_users
         self.num_timeslots = num_timeslots
-        self.num_sats = num_sats
-        self.num_scs = num_scs
+        # 结果目录
+        self.result_dir = os.path.join(result_dir_root, self.start_time_str)
+        os.makedirs(self.result_dir, exist_ok=True)
+        self.sinr_table = None
+        self.detail_records = []
 
     def record_sinr(self, sinr_results):
         """记录每个时隙的SINR结果（shape: [num_users,]）"""
@@ -721,34 +717,74 @@ class SimulationResultWriter:
         })
 
     def save(self):
-        # 保存SINR表格，文件名包含参数信息
-        sinr_file = os.path.join(
-            self.result_dir,
-            f'sinr_user{self.num_users}_sat{self.num_sats}_sc{self.num_scs}_slot{self.num_timeslots}_table.csv'
-        )
-        detail_file = os.path.join(
-            self.result_dir,
-            f'sinr_detail_user{self.num_users}_sat{self.num_sats}_sc{self.num_scs}_slot{self.num_timeslots}_table.csv'
-        )
-        import pandas as pd
-        pd.DataFrame(self.sinr_table).to_csv(sinr_file, index=False, header=False)
-        pd.DataFrame(self.detail_records).to_csv(detail_file, index=False, header=False)
+        # 保存SINR表格
+        sinr_arr = np.array(self.sinr_table)  # shape: [num_timeslots, num_users]
+        sinr_df = pd.DataFrame(sinr_arr.T)  # 行：用户，列：时隙
+        sinr_df.index.name = 'user'
+        sinr_df.columns = [f'slot_{i}' for i in range(self.num_timeslots)]
+        sinr_file = os.path.join(self.result_dir, f'sinr_user{self.num_users}_slot{self.num_timeslots}_table.csv')
+        sinr_df.to_csv(sinr_file)
         print(f"SINR表格已保存: {sinr_file}")
+        # 保存详细过程表格
+        detail_df = pd.DataFrame(self.detail_records)
+        detail_file = os.path.join(self.result_dir, f'sinr_detail_user{self.num_users}_slot{self.num_timeslots}_table.csv')
+        detail_df.to_csv(detail_file, index=False)
         print(f"详细过程表格已保存: {detail_file}")
 
 
-def simulate_user_range(user_indices, static_data_params, simulation_params):
-    import numpy as np
-    # 重新初始化StaticData，避免多进程共享问题
-    static_data = StaticData(**static_data_params)
-    num_snapshots = simulation_params['num_snapshots']
-    slots_per_snapshot = simulation_params['slots_per_snapshot']
-    all_sinr_results = []
-    detail_records = []
+def main():
+    """运行基本仿真实验"""
+    # 1. 配置仿真参数
+    system_param_path = 'config/system_params.json'  # 更新为.json后缀
+    satellite_result_path = 'data/satellite_result/Satellite1_Fixed_Position_Velocity.txt'
+    topology_json_dir = 'data/topology_result/json'
+    
+    # 创建结果保存目录
+    import os
+    results_dir = 'simulation_results'
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+        print(f"创建结果保存目录: {results_dir}")
+
+    # 仿真范围配置
+    num_sats = 1800  # 前5个卫星
+    num_scs =5079   # A1区域前100个小区
+    simulation_time = 900  # 10秒
+    snapshot_interval = 10  # 10秒一个snapshot
+    timeslot_interval = 1  # 1秒一个timeslot
+    
+    # 计算snapshot和timeslot数量
+    num_snapshots = simulation_time // snapshot_interval
+    slots_per_snapshot = snapshot_interval // timeslot_interval
+    
+    print(f"开始仿真实验：")
+    print(f"- 卫星数量: {num_sats}")
+    print(f"- 小区数量: {num_scs}")
+    print(f"- 仿真时长: {simulation_time}秒")
+    print(f"- Snapshot间隔: {snapshot_interval}秒")
+    print(f"- Timeslot间隔: {timeslot_interval}秒")
+    
+    # 2. 初始化StaticData
+    static_data = StaticData(
+        system_param_path=system_param_path,
+        satellite_result_path=satellite_result_path,
+        topology_json_dir=topology_json_dir,
+        num_sats=1800,  # 总卫星数
+        num_timesteps=simulation_time,  # 加载10秒的位置数据
+        sat_range=(0, num_sats),  # 只使用前5个卫星
+        sc_range=(0, num_scs)  # 只使用前100个小区
+    )
+    
+    # 3. 记录结果
+    all_sinr_results = []  # 存储所有时隙的SINR结果
+    detail_writer = None
+    # 4. 开始仿真
     for snapshot_idx in range(num_snapshots):
+        print(f"\n处理Snapshot {snapshot_idx + 1}/{num_snapshots}")
         snapshot_sim = SimulateSnapshot(static_data, snapshot_idx)
         for slot_idx in range(slots_per_snapshot):
             global_slot_idx = snapshot_idx * slots_per_snapshot + slot_idx
+            print(f"  处理Timeslot {slot_idx + 1}/{slots_per_snapshot} (全局时隙 {global_slot_idx + 1})")
             timeslot_sim = SimulateTimeslot(
                 static_data=static_data,
                 association=snapshot_sim.association,
@@ -757,26 +793,24 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
                 timeslot_idx=global_slot_idx,
                 snapshot_sat_positions=static_data.sat_positions[:, snapshot_idx, :]
             )
+            # 计算SINR并收集详细过程
+            sinr_results = []
+            if detail_writer is None:
+                detail_writer = SimulationResultWriter(
+                    num_users=static_data.user_positions.shape[0],
+                    num_timeslots=num_snapshots * slots_per_snapshot
+                )
             beam_schedule_matrix = np.zeros((timeslot_sim.num_sats, timeslot_sim.static_data.sc_centers.shape[0]), dtype=bool)
             for sat_idx in range(timeslot_sim.num_sats):
                 beam_schedule_matrix[sat_idx, timeslot_sim.beam_schedule[sat_idx][timeslot_sim.beam_schedule[sat_idx] >= 0]] = True
             sat_positions = timeslot_sim.snapshot_sat_positions
             noise = timeslot_sim.compute_noise()
-            sinr_results = []
-            for user_idx in user_indices:
+            for user_idx in range(timeslot_sim.num_users):
                 user_sc = timeslot_sim.static_data.user_sc_mapping[user_idx]
                 serving_sat = np.where(timeslot_sim.interference_association[user_idx] == 2)[0][0]
                 if not beam_schedule_matrix[serving_sat, user_sc]:
                     sinr_results.append(float('-inf'))
-                    detail_records.append({
-                        'slot': global_slot_idx,
-                        'user': user_idx,
-                        'rx_power_db': float('-inf'),
-                        'intra_interf_db': float('-inf'),
-                        'inter_interf_db': float('-inf'),
-                        'noise_db': float('-inf'),
-                        'sinr_db': float('-inf')
-                    })
+                    detail_writer.record_detail(global_slot_idx, user_idx, float('-inf'), float('-inf'), float('-inf'), float('-inf'), float('-inf'))
                     continue
                 rx_power_db = timeslot_sim.compute_received_power(
                     sat_positions[serving_sat],
@@ -784,6 +818,7 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
                     timeslot_sim.static_data.sc_centers[user_sc]
                 )
                 rx_power = 10 ** (rx_power_db / 10)
+                # 星内干扰
                 intra_interference = 0
                 active_sc_indices = np.where(beam_schedule_matrix[serving_sat])[0]
                 active_sc_indices = active_sc_indices[active_sc_indices != user_sc]
@@ -797,6 +832,7 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
                         interference_power = 10 ** (interference_power_db / 10)
                         intra_interference += interference_power
                 intra_db = 10 * np.log10(intra_interference) if intra_interference > 0 else float('-inf')
+                # 星间干扰
                 inter_interference = 0
                 interfering_sats = np.where(timeslot_sim.interference_association[user_idx] == 1)[0]
                 if len(interfering_sats) > 0:
@@ -821,180 +857,28 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
                 else:
                     sinr_db = float('-inf')
                 sinr_results.append(sinr_db)
-                detail_records.append({
-                    'slot': global_slot_idx,
-                    'user': user_idx,
-                    'rx_power_db': rx_power_db,
-                    'intra_interf_db': intra_db,
-                    'inter_interf_db': inter_db,
-                    'noise_db': noise_db,
-                    'sinr_db': sinr_db
-                })
+                detail_writer.record_detail(global_slot_idx, user_idx, rx_power_db, intra_db, inter_db, noise_db, sinr_db)
             all_sinr_results.append(sinr_results)
-    return all_sinr_results, detail_records
-
-def main():
-    import time
-    start_time = time.time()
-    
-    # 1. 配置仿真参数
-    system_param_path = 'config/system_params.json'
-    satellite_result_path = 'data/satellite_result/Satellite1_Fixed_Position_Velocity.txt'
-    topology_json_dir = 'data/topology_result/json'
-    
-    # 仿真范围配置
-    num_sats = 500  # 随机选取500个卫星
-    num_scs = 20   # 随机选取20个小区
-    simulation_time = 120  # 120秒
-    snapshot_interval = 1  # 1秒一个snapshot
-    timeslot_interval = 1  # 1秒一个timeslot
-    # 计算snapshot和timeslot数量
-    num_snapshots = simulation_time // snapshot_interval
-    slots_per_snapshot = snapshot_interval // timeslot_interval
-    # 随机选取卫星和小区索引
-    total_sats = 1800
-    total_scs = 120  
-    sat_indices = sorted(random.sample(range(total_sats), num_sats))
-    sc_indices = sorted(random.sample(range(total_scs), num_scs))
-    
-    print(f"开始仿真实验：")
-    print(f"- 卫星数量: {num_sats}")
-    print(f"- 小区数量: {num_scs}")
-    print(f"- 仿真时长: {simulation_time}秒")
-    print(f"- Snapshot间隔: {snapshot_interval}秒")
-    print(f"- Timeslot间隔: {timeslot_interval}秒")
-    
-    # 2. 初始化StaticData（只为获取用户数）
-    init_start = time.time()
-    static_data = StaticData(
-        system_param_path=system_param_path,
-        satellite_result_path=satellite_result_path,
-        topology_json_dir=topology_json_dir,
-        num_sats=1800,  # 总卫星数
-        num_timesteps=simulation_time,  # 加载60秒的位置数据
-        sat_indices=sat_indices,
-        sc_indices=sc_indices
-    )
-    init_time = time.time() - init_start
-    num_users = static_data.user_positions.shape[0]
-    user_indices = np.arange(num_users)
-    user_ranges = np.array_split(user_indices, 8)
-    
-    print(f"- 用户数量: {num_users}")
-    print(f"- 数据初始化耗时: {init_time:.2f}秒")
-    
-
-
-    
-    # 4. 并行仿真
-    sim_start = time.time()
-    static_data_params = {
-        'system_param_path': system_param_path,
-        'satellite_result_path': satellite_result_path,
-        'topology_json_dir': topology_json_dir,
-        'num_sats': 1800,
-        'num_timesteps': simulation_time,
-        'sat_indices': sat_indices,
-        'sc_indices': sc_indices
-    }
-    
-    simulation_params = {
-        'num_snapshots': num_snapshots,
-        'slots_per_snapshot': slots_per_snapshot,
-        'snapshot_interval': snapshot_interval,
-        'timeslot_interval': timeslot_interval
-    }
-    
-    all_sinr_results_parts = []
-    all_detail_records_parts = []
-    
-    with ProcessPoolExecutor(max_workers=8) as executor:
-        futures = []
-        for user_range in user_ranges:
-            futures.append(executor.submit(
-                simulate_user_range, user_range, static_data_params, simulation_params
-            ))
-        
-        # 收集结果
-        all_sinr_results_parts = []
-        all_detail_records_parts = []
-        for future in futures:
-            sinr_part, detail_part = future.result()
-            all_sinr_results_parts.append(sinr_part)
-            all_detail_records_parts.extend(detail_part)
-    
-    sim_time = time.time() - sim_start
-    
-    # 5. 合并结果
-    merge_start = time.time()
-    
-    # 检查是否有结果
-    if not all_sinr_results_parts:
-        print("错误：没有获取到仿真结果")
-        return
-    
-    # 转换结果格式
-    all_sinr_results_parts = [np.array(part) for part in all_sinr_results_parts]
-    all_sinr_results = np.concatenate(all_sinr_results_parts, axis=1)  # 按用户拼接
-    
-    # 计算统计信息
-    valid_sinr = all_sinr_results[all_sinr_results > -1000]  # 过滤有效值
-    if len(valid_sinr) > 0:
-        mean_sinr = np.mean(valid_sinr)
-        max_sinr = np.max(valid_sinr)
-        min_sinr = np.min(valid_sinr)
-    else:
-        mean_sinr = max_sinr = min_sinr = float('-inf')
-    
-    merge_time = time.time() - merge_start
-    
-    # 6. 保存表格
-    save_start = time.time()
-    writer = SimulationResultWriter(num_users, num_snapshots * slots_per_snapshot, num_sats, num_scs)
-    
-    # 准备SINR表格数据
-    sinr_df = pd.DataFrame(all_sinr_results.T)  # 转置，使每行代表一个用户
-    sinr_df.insert(0, 'user', range(num_users))  # 添加用户列
-    sinr_df.columns = ['user'] + [f'slot_{i}' for i in range(all_sinr_results.shape[0])]
-    
-    # 准备详细数据
-    detail_df = pd.DataFrame(all_detail_records_parts)
-    
-    # 保存到文件
-    sinr_file = os.path.join(
-        writer.result_dir,
-        f'sinr_user{num_users}_sat{num_sats}_sc{num_scs}_slot{num_snapshots * slots_per_snapshot}_table.csv'
-    )
-    detail_file = os.path.join(
-        writer.result_dir,
-        f'sinr_detail_user{num_users}_sat{num_sats}_sc{num_scs}_slot{num_snapshots * slots_per_snapshot}_table.csv'
-    )
-    
-    sinr_df.to_csv(sinr_file, index=False)
-    detail_df.to_csv(detail_file, index=False)
-    
-    print(f"SINR表格已保存: {sinr_file}")
-    print(f"详细过程表格已保存: {detail_file}")
-    
-    save_time = time.time() - save_start
-    
-    # 7. 总计时
-    total_time = time.time() - start_time
-    
+            detail_writer.record_sinr(sinr_results)
+            print(f"    平均SINR: {np.mean([v for v in sinr_results if v != float('-inf')]):.2f} dB")
+            print(f"    最大SINR: {np.max([v for v in sinr_results if v != float('-inf')]):.2f} dB")
+            print(f"    最小SINR: {np.min([v for v in sinr_results if v != float('-inf')]):.2f} dB")
+    # 5. 处理并保存结果
+    all_sinr_results = np.array(all_sinr_results)  # [num_timeslots, num_users]
+    mean_sinr = np.mean(all_sinr_results)
+    max_sinr = np.max(all_sinr_results)
+    min_sinr = np.min(all_sinr_results)
     print("\n仿真完成！")
-    print(f"性能统计：")
-    print(f"- 数据初始化: {init_time:.2f}秒")
-    print(f"- 并行仿真计算: {sim_time:.2f}秒")
-    print(f"- 结果合并: {merge_time:.2f}秒")
-    print(f"- 结果保存: {save_time:.2f}秒")
-    print(f"- 总耗时: {total_time:.2f}秒")
-    print(f"- 平均每用户每时隙: {sim_time*1000/(num_users*num_snapshots*slots_per_snapshot):.2f}毫秒")
-    print(f"\n整体统计信息：")
+    print(f"整体统计信息：")
     print(f"- 平均SINR: {mean_sinr:.2f} dB")
     print(f"- 最大SINR: {max_sinr:.2f} dB")
     print(f"- 最小SINR: {min_sinr:.2f} dB")
-    
-    # TensorBoard日志已自动保存
+    # 保存表格
+    if detail_writer is not None:
+        detail_writer.save()
+    # 仍可保存npy以兼容旧流程
+    np.save('simulation_results/sinr_results.npy', all_sinr_results)
+
 
 if __name__ == '__main__':
     main()
