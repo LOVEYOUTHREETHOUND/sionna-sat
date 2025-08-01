@@ -269,74 +269,6 @@ class SimulationResultPlotter:
         
         plt.show()
         
-    def plot_throughput_cdf(self, save_plot=True):
-        """绘制所有用户所有时隙的吞吐量CDF图"""
-        if self.detail_data is None or 'throughput' not in self.detail_data.columns:
-            print("没有详细吞吐量数据，跳过吞吐量CDF图")
-            return
-        plt.figure(figsize=(12, 8))
-        # 过滤有效吞吐量
-        valid_tp = self.detail_data['throughput'][self.detail_data['throughput'] > 0]
-        if len(valid_tp) == 0:
-            print("警告: 没有有效的吞吐量数据")
-            return
-        # 统计信息
-        mean_tp = np.mean(valid_tp)
-        median_tp = np.median(valid_tp)
-        std_tp = np.std(valid_tp)
-        # CDF
-        sorted_tp = np.sort(valid_tp)
-        cdf = np.arange(1, len(sorted_tp) + 1) / len(sorted_tp)
-        plt.plot(sorted_tp/1e6, cdf, 'b-', linewidth=2, label=f'Throughput CDF (n={len(valid_tp)})')
-        plt.axvline(mean_tp/1e6, color='red', linestyle='--', alpha=0.7, label=f'Mean: {mean_tp/1e6:.2f} Mbps')
-        plt.axvline(median_tp/1e6, color='green', linestyle='--', alpha=0.7, label=f'Median: {median_tp/1e6:.2f} Mbps')
-        plt.xlabel('Throughput (Mbps)', fontsize=12)
-        plt.ylabel('CDF', fontsize=12)
-        plt.grid(True, alpha=0.3)
-        plt.legend(fontsize=10)
-        stats_text = f'Statistics:\nMean: {mean_tp/1e6:.2f} Mbps\nMedian: {median_tp/1e6:.2f} Mbps\nStd: {std_tp/1e6:.2f} Mbps\nMin: {min(valid_tp)/1e6:.2f} Mbps\nMax: {max(valid_tp)/1e6:.2f} Mbps'
-        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-        plt.tight_layout()
-        if save_plot:
-            filename = os.path.join(self.output_dir, 'throughput_cdf_analysis.png')
-            plt.savefig(filename, dpi=300, bbox_inches='tight')
-            print(f"吞吐量CDF图已保存: {filename}")
-        plt.show()
-        
-    def plot_pf_rr_throughput_cdf(self, save_plot=True):
-        """绘制PF和RR调度下吞吐量的CDF曲线（同一张图）"""
-        if self.detail_data is None:
-            print("没有详细吞吐量数据，跳过吞吐量CDF图")
-            return
-        plt.figure(figsize=(12, 8))
-        # 过滤有效吞吐量
-        valid_tp_pf = self.detail_data['throughput_pf'][self.detail_data['throughput_pf'] > 0]
-        valid_tp_rr = self.detail_data['throughput_rr'][self.detail_data['throughput_rr'] > 0]
-        if len(valid_tp_pf) == 0 and len(valid_tp_rr) == 0:
-            print("警告: 没有有效的吞吐量数据")
-            return
-        # PF
-        if len(valid_tp_pf) > 0:
-            sorted_tp_pf = np.sort(valid_tp_pf)
-            cdf_pf = np.arange(1, len(sorted_tp_pf) + 1) / len(sorted_tp_pf)
-            plt.plot(sorted_tp_pf/1e6, cdf_pf, 'b-', linewidth=2, label=f'PF Throughput (n={len(valid_tp_pf)})')
-        # RR
-        if len(valid_tp_rr) > 0:
-            sorted_tp_rr = np.sort(valid_tp_rr)
-            cdf_rr = np.arange(1, len(sorted_tp_rr) + 1) / len(sorted_tp_rr)
-            plt.plot(sorted_tp_rr/1e6, cdf_rr, 'r--', linewidth=2, label=f'RR Throughput (n={len(valid_tp_rr)})')
-        plt.xlabel('Throughput (Mbps)', fontsize=12)
-        plt.ylabel('CDF', fontsize=12)
-        plt.grid(True, alpha=0.3)
-        plt.legend(fontsize=10)
-        plt.title('Throughput CDF (PF vs RR)', fontsize=14, fontweight='bold')
-        plt.tight_layout()
-        if save_plot:
-            filename = os.path.join(self.output_dir, 'throughput_cdf_pf_vs_rr.png')
-            plt.savefig(filename, dpi=300, bbox_inches='tight')
-            print(f"PF/RR吞吐量CDF图已保存: {filename}")
-        plt.show()
-        
     def generate_all_plots(self, results_dir=None):
         """生成所有图表"""
         print("开始加载仿真数据...")
@@ -353,12 +285,6 @@ class SimulationResultPlotter:
         
         print("\n生成详细分析图...")
         self.plot_detailed_analysis()
-        
-        print("\n生成吞吐量CDF图...")
-        self.plot_throughput_cdf()
-        
-        print("\n生成PF/RR吞吐量对比CDF图...")
-        self.plot_pf_rr_throughput_cdf()
         
         print("\n生成地面拓扑热力图...")
         self.plot_ground_topology_heatmap()

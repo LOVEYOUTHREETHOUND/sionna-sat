@@ -108,13 +108,6 @@ class StaticData:
         # 设置接收天线增益（用户终端）
         all_params['receiver_gain'] = 25.0  # 设置为25dB，这是典型的用户终端天线增益
         
-        # 设置每个卫星的波束数量
-        all_params['beams_per_sat'] = 50  # 每个卫星50个波束
-        
-        # 设置每个SC的总带宽和资源块数
-        all_params['sc_bandwidth'] = 30e6  # 每个SC总带宽20MHz
-        all_params['num_rbs'] = 150        # 每个SC 10个资源块
-        
         # 验证参数合理性
         if ka > 200:
             print(f"\n警告: ka参数 ({ka:.2f}) 可能过大，这会导致过大的增益衰减")
@@ -376,80 +369,18 @@ class SimulateTimeslot:
         self.N0 = self._precompute_noise()
         # 存储snapshot时刻的卫星位置 [num_sats, 3]
         self.snapshot_sat_positions = snapshot_sat_positions
-        
-        # 打印调度信息
-        self._print_beam_schedule_info()
 
     def _round_robin_beam_schedule(self):
-        """
-        双层调度器：卫星波束调度器
-        每个卫星有50个波束，根据关联矩阵确定服务的小区
-        调度逻辑：
-        1. 如果卫星关联的SC数目 <= 50，每个时隙服务所有小区
-        2. 如果卫星关联的SC数目 > 50，每个时隙轮询服务50个小区
-        """
         schedule = -np.ones((self.num_sats, self.beams_per_sat), dtype=int)
-        
         for sat in range(self.num_sats):
-            # 获取该卫星关联的所有SC
             sc_indices = np.where(self.association[:, sat] == 1)[0]
             num_sc = len(sc_indices)
-            
-            if num_sc == 0:
-                continue  # 该卫星没有关联的小区
-                
-            print(f"卫星 {sat}: 关联 {num_sc} 个小区，波束数 {self.beams_per_sat}")
-            
-            if num_sc <= self.beams_per_sat:
-                # 情况1：关联小区数 <= 波束数，每个时隙服务所有小区
-                print(f"  策略：全量服务（小区数 <= 波束数）")
-                for b in range(min(num_sc, self.beams_per_sat)):
-                    schedule[sat, b] = sc_indices[b]
-                    
-            else:
-                # 情况2：关联小区数 > 波束数，需要轮询服务
-                print(f"  策略：轮询服务（小区数 > 波束数）")
-                # 计算当前时隙应该服务的起始索引
-                # 每个时隙轮询50个小区，下一个时隙从第51个小区开始
-                start_idx = (self.timeslot_idx * self.beams_per_sat) % num_sc
-                
-                for b in range(self.beams_per_sat):
-                        sc_idx = (start_idx + b) % num_sc
-                        schedule[sat, b] = sc_indices[sc_idx]
-                        print(f"  时隙 {self.timeslot_idx}: 服务小区 {start_idx} 到 {start_idx + self.beams_per_sat - 1} (循环)")
-                    
-            
-        
+            offset = self.timeslot_idx * self.beams_per_sat % num_sc if num_sc > 0 else 0
+            for b in range(self.beams_per_sat):
+                if num_sc > 0:
+                    idx = (offset + b) % num_sc
+                    schedule[sat, b] = sc_indices[idx]
         return schedule
-    
-    def _print_beam_schedule_info(self):
-        """打印当前时隙的波束调度信息"""
-        print(f"\n=== 时隙 {self.timeslot_idx} 波束调度信息 ===")
-        
-        for sat in range(self.num_sats):
-            # 获取该卫星关联的所有SC
-            sc_indices = np.where(self.association[:, sat] == 1)[0]
-            num_sc = len(sc_indices)
-            
-            if num_sc == 0:
-                continue
-                
-            # 获取当前时隙该卫星激活的波束
-            active_beams = self.beam_schedule[sat]
-            active_scs = active_beams[active_beams >= 0]
-            
-            print(f"卫星 {sat}:")
-            print(f"  关联小区数: {num_sc}")
-            print(f"  当前激活波束数: {len(active_scs)}")
-            print(f"  服务小区: {active_scs.tolist()}")
-            
-            if num_sc > self.beams_per_sat:
-                # 显示轮询进度
-                start_idx = (self.timeslot_idx * self.beams_per_sat) % num_sc
-                end_idx = (start_idx + self.beams_per_sat - 1) % num_sc
-                print(f"  轮询进度: {start_idx}-{end_idx} / {num_sc}")
-        
-        print("=" * 50)
 
     def _precompute_noise(self):
         """预计算噪声功率"""
@@ -464,7 +395,7 @@ class SimulateTimeslot:
         Teq = 10 ** ((receiver_gain - g_over_t) / 10)
         
         # 2. 计算噪声功率 N0 = k * Teq * B
-        N0 = boltzmann_constant * Teq * bandwidth * 0.1  # 单位：瓦
+        N0 = boltzmann_constant * Teq * bandwidth  # 单位：瓦
         print('系统噪声功率计算值为：', N0, 'W')
         return N0
 
@@ -682,7 +613,7 @@ class SimulateTimeslot:
             # 计算接收功率
             rx_power_db = self.compute_received_power(
                 sat_positions[serving_sat],
-                    self.static_data.user_positions[user_idx],
+                self.static_data.user_positions[user_idx],
                 self.static_data.sc_centers[user_sc]
             )
             rx_power = 10 ** (rx_power_db / 10)
@@ -755,51 +686,6 @@ class SimulateTimeslot:
         
         return sinr_all
 
-    def _sc_resource_allocation(self, sc_idx, timeslot_idx):
-        """
-        对指定SC内所有用户进行round-robin资源分配
-        返回: {user_idx: 分配的RB数}
-        """
-        user_indices = np.where(self.static_data.user_sc_mapping == sc_idx)[0]
-        num_users = len(user_indices)
-        num_rbs = int(self.system_params.get('num_rbs', 10))
-        allocation = {u: 0 for u in user_indices}
-        if num_users == 0:
-            return allocation
-        for rb in range(num_rbs):
-            user = user_indices[(timeslot_idx + rb) % num_users]
-            allocation[user] += 1
-        return allocation
-
-    def _sc_pf_allocation(self, sc_idx, timeslot_idx, user_avg_rate, instant_rate):
-        """
-        PF调度：对指定SC内所有用户进行比例公平资源分配
-        user_avg_rate: dict {user_idx: 历史平均吞吐量}
-        instant_rate: ndarray [num_users,]，每个用户的瞬时速率（每个RB）
-        返回: {user_idx: 分配的RB数}
-        """
-        user_indices = np.where(self.static_data.user_sc_mapping == sc_idx)[0]
-        num_users = len(user_indices)
-        num_rbs = int(self.system_params.get('num_rbs', 10))
-        allocation = {u: 0 for u in user_indices}
-        if num_users == 0:
-            return allocation
-        # 计算PF指标（instant_rate/avg_rate）
-        pf_metric = []
-        for u in user_indices:
-            avg = user_avg_rate.get(u, 1e-6)
-            inst = instant_rate[u] if u < len(instant_rate) else 1e-6
-            pf_metric.append((u, inst / avg))
-        for rb in range(num_rbs):
-            pf_metric = sorted(pf_metric, key=lambda x: -x[1])
-            user = pf_metric[0][0]
-            allocation[user] += 1
-            # 分配后，用户的速率增加，需更新PF指标
-            inst = instant_rate[user] * allocation[user]  # 分配了N个RB，速率为N倍
-            avg = user_avg_rate.get(user, 1e-6)
-            pf_metric[0] = (user, inst / avg)
-        return allocation
-
 
 class SimulationResultWriter:
     def __init__(self, num_users, num_timeslots, num_sats, num_scs, result_dir_root='simulation_results'):
@@ -846,18 +732,7 @@ class SimulationResultWriter:
         )
         import pandas as pd
         pd.DataFrame(self.sinr_table).to_csv(sinr_file, index=False, header=False)
-        # 强制指定字段顺序
-        columns = [
-            'slot', 'user', 'rx_power_db', 'intra_interf_db', 'inter_interf_db',
-            'noise_db', 'sinr_db',
-            'spectral_efficiency_rr', 'throughput_rr',
-            'spectral_efficiency_pf', 'throughput_pf'
-        ]
-        df = pd.DataFrame(self.detail_records)
-        for col in columns:
-            if col not in df.columns:
-                df[col] = float('nan')
-        df[columns].to_csv(detail_file, index=False, header=True)
+        pd.DataFrame(self.detail_records).to_csv(detail_file, index=False, header=False)
         print(f"SINR表格已保存: {sinr_file}")
         print(f"详细过程表格已保存: {detail_file}")
 
@@ -870,9 +745,6 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
     slots_per_snapshot = simulation_params['slots_per_snapshot']
     all_sinr_results = []
     detail_records = []
-    num_users = static_data.user_positions.shape[0]
-    user_avg_rate_pf = {u: 1e-6 for u in range(num_users)}  # PF历史平均吞吐量
-    alpha = 0.9  # PF指数加权系数
     for snapshot_idx in range(num_snapshots):
         snapshot_sim = SimulateSnapshot(static_data, snapshot_idx)
         for slot_idx in range(slots_per_snapshot):
@@ -891,69 +763,11 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
             sat_positions = timeslot_sim.snapshot_sat_positions
             noise = timeslot_sim.compute_noise()
             sinr_results = []
-            # 预先为本时隙所有用户计算SINR（线性值）和瞬时速率
-            user_sinr_linear = np.zeros(num_users)
-            user_instant_rate = np.zeros(num_users)
-            rb_bandwidth = timeslot_sim.system_params['sc_bandwidth'] / timeslot_sim.system_params['num_rbs']
-            for user_idx in user_indices:
-                user_sc = timeslot_sim.static_data.user_sc_mapping[user_idx]
-                serving_sat = np.where(timeslot_sim.interference_association[user_idx] == 2)[0][0]
-                if not beam_schedule_matrix[serving_sat, user_sc]:
-                    user_sinr_linear[user_idx] = 0.0
-                    user_instant_rate[user_idx] = 0.0
-                    continue
-                rx_power_db = timeslot_sim.compute_received_power(
-                    sat_positions[serving_sat],
-                    timeslot_sim.static_data.user_positions[user_idx],
-                    timeslot_sim.static_data.sc_centers[user_sc]
-                )
-                rx_power = 10 ** (rx_power_db / 10)
-                intra_interference = 0
-                active_sc_indices = np.where(beam_schedule_matrix[serving_sat])[0]
-                active_sc_indices = active_sc_indices[active_sc_indices != user_sc]
-                if len(active_sc_indices) > 0:
-                    for sc_idx in active_sc_indices:
-                        interference_power_db = timeslot_sim.compute_received_power(
-                            sat_positions[serving_sat],
-                            timeslot_sim.static_data.user_positions[user_idx],
-                            timeslot_sim.static_data.sc_centers[sc_idx]
-                        )
-                        interference_power = 10 ** (interference_power_db / 10)
-                        intra_interference += interference_power
-                inter_interference = 0
-                interfering_sats = np.where(timeslot_sim.interference_association[user_idx] == 1)[0]
-                if len(interfering_sats) > 0:
-                    for sat_idx2 in interfering_sats:
-                        active_sc_indices2 = np.where(beam_schedule_matrix[sat_idx2])[0]
-                        if len(active_sc_indices2) > 0:
-                            for sc_idx2 in active_sc_indices2:
-                                interference_power_db = timeslot_sim.compute_received_power(
-                                    sat_positions[sat_idx2],
-                                    timeslot_sim.static_data.user_positions[user_idx],
-                                    timeslot_sim.static_data.sc_centers[sc_idx2]
-                                )
-                                interference_power = 10 ** (interference_power_db / 10)
-                                inter_interference += interference_power
-                denominator = noise
-                if denominator > 0:
-                    sinr = rx_power / denominator
-                    user_sinr_linear[user_idx] = sinr
-                    user_instant_rate[user_idx] = rb_bandwidth * np.log2(1 + sinr)
-                else:
-                    user_sinr_linear[user_idx] = 0.0
-                    user_instant_rate[user_idx] = 0.0
-            # 预先为本时隙所有SC计算RR和PF分配
-            sc_allocation_rr_dict = {}
-            sc_allocation_pf_dict = {}
-            for sc_idx in range(timeslot_sim.num_sc):
-                sc_allocation_rr_dict[sc_idx] = timeslot_sim._sc_resource_allocation(sc_idx, global_slot_idx)
-                sc_allocation_pf_dict[sc_idx] = timeslot_sim._sc_pf_allocation(sc_idx, global_slot_idx, user_avg_rate_pf, user_instant_rate)
             for user_idx in user_indices:
                 user_sc = timeslot_sim.static_data.user_sc_mapping[user_idx]
                 serving_sat = np.where(timeslot_sim.interference_association[user_idx] == 2)[0][0]
                 if not beam_schedule_matrix[serving_sat, user_sc]:
                     sinr_results.append(float('-inf'))
-                    # 保证每个用户每时隙都有一条记录
                     detail_records.append({
                         'slot': global_slot_idx,
                         'user': user_idx,
@@ -961,11 +775,7 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
                         'intra_interf_db': float('-inf'),
                         'inter_interf_db': float('-inf'),
                         'noise_db': float('-inf'),
-                        'sinr_db': float('-inf'),
-                        'spectral_efficiency_rr': float('-inf'),
-                        'throughput_rr': 0.0,
-                        'spectral_efficiency_pf': float('-inf'),
-                        'throughput_pf': 0.0
+                        'sinr_db': float('-inf')
                     })
                     continue
                 rx_power_db = timeslot_sim.compute_received_power(
@@ -986,6 +796,7 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
                         )
                         interference_power = 10 ** (interference_power_db / 10)
                         intra_interference += interference_power
+                intra_db = 10 * np.log10(intra_interference) if intra_interference > 0 else float('-inf')
                 inter_interference = 0
                 interfering_sats = np.where(timeslot_sim.interference_association[user_idx] == 1)[0]
                 if len(interfering_sats) > 0:
@@ -1000,31 +811,16 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
                                 )
                                 interference_power = 10 ** (interference_power_db / 10)
                                 inter_interference += interference_power
-                denominator = noise
+                inter_db = 10 * np.log10(inter_interference) if inter_interference > 0 else float('-inf')
+                noise_db = 10 * np.log10(noise) if noise > 0 else float('-inf')
+                total_interference = intra_interference + inter_interference
+                denominator = total_interference + noise
                 if denominator > 0:
                     sinr = rx_power / denominator
                     sinr_db = 10 * np.log10(sinr)
                 else:
                     sinr_db = float('-inf')
                 sinr_results.append(sinr_db)
-                # 资源分配与吞吐量计算（RR）
-                sc_allocation_rr = sc_allocation_rr_dict[user_sc]
-                user_rbs_rr = sc_allocation_rr.get(user_idx, 0)
-                rb_bandwidth = timeslot_sim.system_params['sc_bandwidth'] / timeslot_sim.system_params['num_rbs']
-                user_bw_rr = user_rbs_rr * rb_bandwidth
-                spectral_efficiency_rr = np.log2(1 + sinr) if sinr_db > -1000 and sinr > 0 else 0.0
-                throughput_rr = user_bw_rr * spectral_efficiency_rr if user_bw_rr > 0 else 0.0
-                # 资源分配与吞吐量计算（PF）
-                sc_allocation_pf = sc_allocation_pf_dict[user_sc]
-                user_rbs_pf = sc_allocation_pf.get(user_idx, 0)
-                user_bw_pf = user_rbs_pf * rb_bandwidth
-                spectral_efficiency_pf = np.log2(1 + sinr) if sinr_db > -1000 and sinr > 0 else 0.0
-                throughput_pf = user_bw_pf * spectral_efficiency_pf if user_bw_pf > 0 else 0.0
-                # 更新PF历史平均
-                user_avg_rate_pf[user_idx] = alpha * user_avg_rate_pf[user_idx] + (1 - alpha) * throughput_pf
-                intra_db = 10 * np.log10(intra_interference) if intra_interference > 0 else float('-inf')
-                inter_db = 10 * np.log10(inter_interference) if inter_interference > 0 else float('-inf')
-                noise_db = 10 * np.log10(noise) if noise > 0 else float('-inf')
                 detail_records.append({
                     'slot': global_slot_idx,
                     'user': user_idx,
@@ -1032,11 +828,7 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
                     'intra_interf_db': intra_db,
                     'inter_interf_db': inter_db,
                     'noise_db': noise_db,
-                    'sinr_db': sinr_db,
-                    'spectral_efficiency_rr': spectral_efficiency_rr,
-                    'throughput_rr': throughput_rr,
-                    'spectral_efficiency_pf': spectral_efficiency_pf,
-                    'throughput_pf': throughput_pf
+                    'sinr_db': sinr_db
                 })
             all_sinr_results.append(sinr_results)
     return all_sinr_results, detail_records
@@ -1052,7 +844,7 @@ def main():
     
     # 仿真范围配置
     num_sats = 500  # 随机选取500个卫星
-    num_scs = 200   # 随机选取200个小区
+    num_scs = 20   # 随机选取20个小区
     simulation_time = 120  # 120秒
     snapshot_interval = 1  # 1秒一个snapshot
     timeslot_interval = 1  # 1秒一个timeslot
@@ -1061,7 +853,7 @@ def main():
     slots_per_snapshot = snapshot_interval // timeslot_interval
     # 随机选取卫星和小区索引
     total_sats = 1800
-    total_scs = 5079  
+    total_scs = 120  
     sat_indices = sorted(random.sample(range(total_sats), num_sats))
     sc_indices = sorted(random.sample(range(total_scs), num_scs))
     
