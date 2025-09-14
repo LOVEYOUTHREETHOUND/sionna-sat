@@ -270,71 +270,226 @@ class SimulationResultPlotter:
         plt.show()
         
     def plot_throughput_cdf(self, save_plot=True):
-        """绘制所有用户所有时隙的吞吐量CDF图"""
+        """绘制用户平均吞吐量的CDF图"""
         if self.detail_data is None or 'throughput' not in self.detail_data.columns:
             print("没有详细吞吐量数据，跳过吞吐量CDF图")
             return
+        
         plt.figure(figsize=(12, 8))
-        # 过滤有效吞吐量
-        valid_tp = self.detail_data['throughput'][self.detail_data['throughput'] > 0]
-        if len(valid_tp) == 0:
-            print("警告: 没有有效的吞吐量数据")
+        
+        # 计算每个用户的平均吞吐量（包括0值）
+        user_avg_throughput = self.detail_data.groupby('user')['throughput'].mean()
+        
+        if len(user_avg_throughput) == 0:
+            print("警告: 没有用户平均吞吐量数据")
             return
+        
         # 统计信息
-        mean_tp = np.mean(valid_tp)
-        median_tp = np.median(valid_tp)
-        std_tp = np.std(valid_tp)
+        mean_tp = np.mean(user_avg_throughput)
+        median_tp = np.median(user_avg_throughput)
+        std_tp = np.std(user_avg_throughput)
+        
         # CDF
-        sorted_tp = np.sort(valid_tp)
+        sorted_tp = np.sort(user_avg_throughput)
         cdf = np.arange(1, len(sorted_tp) + 1) / len(sorted_tp)
-        plt.plot(sorted_tp/1e6, cdf, 'b-', linewidth=2, label=f'Throughput CDF (n={len(valid_tp)})')
+        
+        plt.plot(sorted_tp/1e6, cdf, 'b-', linewidth=2, label=f'User Average Throughput CDF (n={len(user_avg_throughput)})')
         plt.axvline(mean_tp/1e6, color='red', linestyle='--', alpha=0.7, label=f'Mean: {mean_tp/1e6:.2f} Mbps')
         plt.axvline(median_tp/1e6, color='green', linestyle='--', alpha=0.7, label=f'Median: {median_tp/1e6:.2f} Mbps')
-        plt.xlabel('Throughput (Mbps)', fontsize=12)
+        
+        # 添加分位数线
+        percentiles = [10, 25, 75, 90]
+        colors = ['orange', 'purple', 'purple', 'orange']
+        for p, color in zip(percentiles, colors):
+            value = np.percentile(user_avg_throughput, p)
+            plt.axvline(value/1e6, color=color, linestyle=':', alpha=0.5, 
+                       label=f'{p}th percentile: {value/1e6:.2f} Mbps')
+        
+        plt.xlabel('User Average Throughput (Mbps)', fontsize=12)
         plt.ylabel('CDF', fontsize=12)
+        plt.title('User Average Throughput CDF', fontsize=14, fontweight='bold')
         plt.grid(True, alpha=0.3)
         plt.legend(fontsize=10)
-        stats_text = f'Statistics:\nMean: {mean_tp/1e6:.2f} Mbps\nMedian: {median_tp/1e6:.2f} Mbps\nStd: {std_tp/1e6:.2f} Mbps\nMin: {min(valid_tp)/1e6:.2f} Mbps\nMax: {max(valid_tp)/1e6:.2f} Mbps'
+        
+        stats_text = f'Statistics:\nMean: {mean_tp/1e6:.2f} Mbps\nMedian: {median_tp/1e6:.2f} Mbps\nStd: {std_tp/1e6:.2f} Mbps\nMin: {min(user_avg_throughput)/1e6:.2f} Mbps\nMax: {max(user_avg_throughput)/1e6:.2f} Mbps'
         plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
         plt.tight_layout()
+        
         if save_plot:
-            filename = os.path.join(self.output_dir, 'throughput_cdf_analysis.png')
+            filename = os.path.join(self.output_dir, 'user_average_throughput_cdf.png')
             plt.savefig(filename, dpi=300, bbox_inches='tight')
-            print(f"吞吐量CDF图已保存: {filename}")
+            print(f"用户平均吞吐量CDF图已保存: {filename}")
+        
+        plt.show()
+        
+    def plot_pf_throughput_cdf(self, save_plot=True):
+        """绘制PF调度下用户平均吞吐量的CDF图"""
+        if self.detail_data is None or 'throughput_pf' not in self.detail_data.columns:
+            print("没有PF调度详细吞吐量数据，跳过PF吞吐量CDF图")
+            return
+        
+        plt.figure(figsize=(12, 8))
+        
+        # 计算每个用户的平均吞吐量（PF调度，包括0值）
+        user_avg_throughput_pf = self.detail_data.groupby('user')['throughput_pf'].mean()
+        
+        if len(user_avg_throughput_pf) == 0:
+            print("警告: 没有PF调度用户平均吞吐量数据")
+            return
+        
+        # 统计信息
+        mean_tp = np.mean(user_avg_throughput_pf)
+        median_tp = np.median(user_avg_throughput_pf)
+        std_tp = np.std(user_avg_throughput_pf)
+        
+        # CDF
+        sorted_tp = np.sort(user_avg_throughput_pf)
+        cdf = np.arange(1, len(sorted_tp) + 1) / len(sorted_tp)
+        
+        plt.plot(sorted_tp/1e6, cdf, 'b-', linewidth=2, label=f'PF User Average Throughput CDF (n={len(user_avg_throughput_pf)})')
+        plt.axvline(mean_tp/1e6, color='red', linestyle='--', alpha=0.7, label=f'Mean: {mean_tp/1e6:.2f} Mbps')
+        plt.axvline(median_tp/1e6, color='green', linestyle='--', alpha=0.7, label=f'Median: {median_tp/1e6:.2f} Mbps')
+        
+        # 添加分位数线
+        percentiles = [10, 25, 75, 90]
+        colors = ['orange', 'purple', 'purple', 'orange']
+        for p, color in zip(percentiles, colors):
+            value = np.percentile(user_avg_throughput_pf, p)
+            plt.axvline(value/1e6, color=color, linestyle=':', alpha=0.5, 
+                       label=f'{p}th percentile: {value/1e6:.2f} Mbps')
+        
+        plt.xlabel('User Average Throughput (Mbps)', fontsize=12)
+        plt.ylabel('CDF', fontsize=12)
+        plt.title('PF Scheduling User Average Throughput CDF', fontsize=14, fontweight='bold')
+        plt.grid(True, alpha=0.3)
+        plt.legend(fontsize=10)
+        
+        stats_text = f'PF Statistics:\nMean: {mean_tp/1e6:.2f} Mbps\nMedian: {median_tp/1e6:.2f} Mbps\nStd: {std_tp/1e6:.2f} Mbps\nMin: {min(user_avg_throughput_pf)/1e6:.2f} Mbps\nMax: {max(user_avg_throughput_pf)/1e6:.2f} Mbps'
+        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        plt.tight_layout()
+        
+        if save_plot:
+            filename = os.path.join(self.output_dir, 'pf_user_average_throughput_cdf.png')
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+            print(f"PF调度用户平均吞吐量CDF图已保存: {filename}")
+        
+        plt.show()
+        
+    def plot_rr_throughput_cdf(self, save_plot=True):
+        """绘制RR调度下用户平均吞吐量的CDF图"""
+        if self.detail_data is None or 'throughput_rr' not in self.detail_data.columns:
+            print("没有RR调度详细吞吐量数据，跳过RR吞吐量CDF图")
+            return
+        
+        plt.figure(figsize=(12, 8))
+        
+        # 计算每个用户的平均吞吐量（RR调度，包括0值）
+        user_avg_throughput_rr = self.detail_data.groupby('user')['throughput_rr'].mean()
+        
+        if len(user_avg_throughput_rr) == 0:
+            print("警告: 没有RR调度用户平均吞吐量数据")
+            return
+        
+        # 统计信息
+        mean_tp = np.mean(user_avg_throughput_rr)
+        median_tp = np.median(user_avg_throughput_rr)
+        std_tp = np.std(user_avg_throughput_rr)
+        
+        # CDF
+        sorted_tp = np.sort(user_avg_throughput_rr)
+        cdf = np.arange(1, len(sorted_tp) + 1) / len(sorted_tp)
+        
+        plt.plot(sorted_tp/1e6, cdf, 'r-', linewidth=2, label=f'RR User Average Throughput CDF (n={len(user_avg_throughput_rr)})')
+        plt.axvline(mean_tp/1e6, color='red', linestyle='--', alpha=0.7, label=f'Mean: {mean_tp/1e6:.2f} Mbps')
+        plt.axvline(median_tp/1e6, color='green', linestyle='--', alpha=0.7, label=f'Median: {median_tp/1e6:.2f} Mbps')
+        
+        # 添加分位数线
+        percentiles = [10, 25, 75, 90]
+        colors = ['orange', 'purple', 'purple', 'orange']
+        for p, color in zip(percentiles, colors):
+            value = np.percentile(user_avg_throughput_rr, p)
+            plt.axvline(value/1e6, color=color, linestyle=':', alpha=0.5, 
+                       label=f'{p}th percentile: {value/1e6:.2f} Mbps')
+        
+        plt.xlabel('User Average Throughput (Mbps)', fontsize=12)
+        plt.ylabel('CDF', fontsize=12)
+        plt.title('RR Scheduling User Average Throughput CDF', fontsize=14, fontweight='bold')
+        plt.grid(True, alpha=0.3)
+        plt.legend(fontsize=10)
+        
+        stats_text = f'RR Statistics:\nMean: {mean_tp/1e6:.2f} Mbps\nMedian: {median_tp/1e6:.2f} Mbps\nStd: {std_tp/1e6:.2f} Mbps\nMin: {min(user_avg_throughput_rr)/1e6:.2f} Mbps\nMax: {max(user_avg_throughput_rr)/1e6:.2f} Mbps'
+        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        plt.tight_layout()
+        
+        if save_plot:
+            filename = os.path.join(self.output_dir, 'rr_user_average_throughput_cdf.png')
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+            print(f"RR调度用户平均吞吐量CDF图已保存: {filename}")
+        
         plt.show()
         
     def plot_pf_rr_throughput_cdf(self, save_plot=True):
-        """绘制PF和RR调度下吞吐量的CDF曲线（同一张图）"""
+        """绘制PF和RR调度下用户平均吞吐量的CDF曲线（同一张图）"""
         if self.detail_data is None:
             print("没有详细吞吐量数据，跳过吞吐量CDF图")
             return
+        
         plt.figure(figsize=(12, 8))
-        # 过滤有效吞吐量
-        valid_tp_pf = self.detail_data['throughput_pf'][self.detail_data['throughput_pf'] > 0]
-        valid_tp_rr = self.detail_data['throughput_rr'][self.detail_data['throughput_rr'] > 0]
-        if len(valid_tp_pf) == 0 and len(valid_tp_rr) == 0:
-            print("警告: 没有有效的吞吐量数据")
+        
+        # 计算每个用户的平均吞吐量（PF和RR，包括0值）
+        user_avg_throughput_pf = self.detail_data.groupby('user')['throughput_pf'].mean()
+        user_avg_throughput_rr = self.detail_data.groupby('user')['throughput_rr'].mean()
+        
+        if len(user_avg_throughput_pf) == 0 and len(user_avg_throughput_rr) == 0:
+            print("警告: 没有用户平均吞吐量数据")
             return
-        # PF
-        if len(valid_tp_pf) > 0:
-            sorted_tp_pf = np.sort(valid_tp_pf)
+        
+        # 绘制PF调度CDF
+        if len(user_avg_throughput_pf) > 0:
+            sorted_tp_pf = np.sort(user_avg_throughput_pf)
             cdf_pf = np.arange(1, len(sorted_tp_pf) + 1) / len(sorted_tp_pf)
-            plt.plot(sorted_tp_pf/1e6, cdf_pf, 'b-', linewidth=2, label=f'PF Throughput (n={len(valid_tp_pf)})')
-        # RR
-        if len(valid_tp_rr) > 0:
-            sorted_tp_rr = np.sort(valid_tp_rr)
+            plt.plot(sorted_tp_pf/1e6, cdf_pf, 'b-', linewidth=2, label=f'PF User Average Throughput (n={len(user_avg_throughput_pf)})')
+            
+            # 添加PF统计线
+            mean_pf = np.mean(user_avg_throughput_pf)
+            median_pf = np.median(user_avg_throughput_pf)
+            plt.axvline(mean_pf/1e6, color='blue', linestyle=':', alpha=0.7, label=f'PF Mean: {mean_pf/1e6:.2f} Mbps')
+            plt.axvline(median_pf/1e6, color='blue', linestyle='-.', alpha=0.7, label=f'PF Median: {median_pf/1e6:.2f} Mbps')
+        
+        # 绘制RR调度CDF
+        if len(user_avg_throughput_rr) > 0:
+            sorted_tp_rr = np.sort(user_avg_throughput_rr)
             cdf_rr = np.arange(1, len(sorted_tp_rr) + 1) / len(sorted_tp_rr)
-            plt.plot(sorted_tp_rr/1e6, cdf_rr, 'r--', linewidth=2, label=f'RR Throughput (n={len(valid_tp_rr)})')
-        plt.xlabel('Throughput (Mbps)', fontsize=12)
+            plt.plot(sorted_tp_rr/1e6, cdf_rr, 'r--', linewidth=2, label=f'RR User Average Throughput (n={len(user_avg_throughput_rr)})')
+            
+            # 添加RR统计线
+            mean_rr = np.mean(user_avg_throughput_rr)
+            median_rr = np.median(user_avg_throughput_rr)
+            plt.axvline(mean_rr/1e6, color='red', linestyle=':', alpha=0.7, label=f'RR Mean: {mean_rr/1e6:.2f} Mbps')
+            plt.axvline(median_rr/1e6, color='red', linestyle='-.', alpha=0.7, label=f'RR Median: {median_rr/1e6:.2f} Mbps')
+        
+        plt.xlabel('User Average Throughput (Mbps)', fontsize=12)
         plt.ylabel('CDF', fontsize=12)
+        plt.title('User Average Throughput CDF (PF vs RR)', fontsize=14, fontweight='bold')
         plt.grid(True, alpha=0.3)
         plt.legend(fontsize=10)
-        plt.title('Throughput CDF (PF vs RR)', fontsize=14, fontweight='bold')
+        
+        # 添加统计信息文本框
+        if len(user_avg_throughput_pf) > 0 and len(user_avg_throughput_rr) > 0:
+            stats_text = f'PF Statistics:\nMean: {mean_pf/1e6:.2f} Mbps\nMedian: {median_pf/1e6:.2f} Mbps\n\nRR Statistics:\nMean: {mean_rr/1e6:.2f} Mbps\nMedian: {median_rr/1e6:.2f} Mbps'
+            plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, 
+                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
         plt.tight_layout()
+        
         if save_plot:
-            filename = os.path.join(self.output_dir, 'throughput_cdf_pf_vs_rr.png')
+            filename = os.path.join(self.output_dir, 'user_average_throughput_cdf_pf_vs_rr.png')
             plt.savefig(filename, dpi=300, bbox_inches='tight')
-            print(f"PF/RR吞吐量CDF图已保存: {filename}")
+            print(f"PF/RR用户平均吞吐量CDF图已保存: {filename}")
+        
         plt.show()
         
     def generate_all_plots(self, results_dir=None):
@@ -345,23 +500,29 @@ class SimulationResultPlotter:
         print("\n生成SINR CDF图...")
         self.plot_sinr_cdf()
         
-        print("\n生成SINR热力图...")
-        self.plot_sinr_heatmap()
+        # print("\n生成SINR热力图...")
+        # self.plot_sinr_heatmap()
         
         print("\n生成SINR时间序列图...")
         self.plot_sinr_time_series()
         
-        print("\n生成详细分析图...")
-        self.plot_detailed_analysis()
+        # print("\n生成详细分析图...")
+        # self.plot_detailed_analysis()
         
-        print("\n生成吞吐量CDF图...")
+        print("\n生成用户平均吞吐量CDF图...")
         self.plot_throughput_cdf()
         
-        print("\n生成PF/RR吞吐量对比CDF图...")
+        print("\n生成PF调度用户平均吞吐量CDF图...")
+        self.plot_pf_throughput_cdf()
+        
+        print("\n生成RR调度用户平均吞吐量CDF图...")
+        self.plot_rr_throughput_cdf()
+        
+        print("\n生成PF/RR用户平均吞吐量对比CDF图...")
         self.plot_pf_rr_throughput_cdf()
         
-        print("\n生成地面拓扑热力图...")
-        self.plot_ground_topology_heatmap()
+        # print("\n生成地面拓扑热力图...")
+        # self.plot_ground_topology_heatmap()
         
         print(f"\n所有图表已保存到: {self.output_dir}")
         
@@ -379,7 +540,8 @@ class SimulationResultPlotter:
             f.write(f"仿真参数:\n")
             f.write(f"- 用户数量: {self.num_users}\n")
             f.write(f"- 时隙数量: {self.num_slots}\n")
-            f.write(f"- 总数据点数: {self.num_users * self.num_slots}\n\n")
+            f.write(f"- 总数据点数: {self.num_users * self.num_slots}\n")
+            f.write(f"- 每个用户平均数据点数: {self.num_slots}\n\n")
             
             # 计算整体统计信息
             all_sinr = []
@@ -403,6 +565,50 @@ class SimulationResultPlotter:
                 f.write(f"- 平均接收功率: {np.mean(valid_rx):.2f} dBW\n")
                 f.write(f"- 平均星内干扰: {np.mean(valid_rx):.2f} dBW\n")
                 f.write(f"- 平均星间干扰: {np.mean(valid_rx):.2f} dBW\n")
+                
+                # 添加用户平均吞吐量统计
+                if 'throughput_pf' in self.detail_data.columns and 'throughput_rr' in self.detail_data.columns:
+                    user_avg_pf = self.detail_data.groupby('user')['throughput_pf'].mean()
+                    user_avg_rr = self.detail_data.groupby('user')['throughput_rr'].mean()
+                    
+                    if len(user_avg_pf) > 0:
+                        f.write(f"\nPF调度用户平均吞吐量统计:\n")
+                        f.write(f"- 总用户数: {len(user_avg_pf)}\n")
+                        f.write(f"- 平均吞吐量: {np.mean(user_avg_pf)/1e6:.2f} Mbps\n")
+                        f.write(f"- 中位数吞吐量: {np.median(user_avg_pf)/1e6:.2f} Mbps\n")
+                        f.write(f"- 标准差: {np.std(user_avg_pf)/1e6:.2f} Mbps\n")
+                        f.write(f"- 最小值: {min(user_avg_pf)/1e6:.2f} Mbps\n")
+                        f.write(f"- 最大值: {max(user_avg_pf)/1e6:.2f} Mbps\n")
+                        f.write(f"- 10%分位数: {np.percentile(user_avg_pf, 10)/1e6:.2f} Mbps\n")
+                        f.write(f"- 25%分位数: {np.percentile(user_avg_pf, 25)/1e6:.2f} Mbps\n")
+                        f.write(f"- 75%分位数: {np.percentile(user_avg_pf, 75)/1e6:.2f} Mbps\n")
+                        f.write(f"- 90%分位数: {np.percentile(user_avg_pf, 90)/1e6:.2f} Mbps\n")
+                    
+                    if len(user_avg_rr) > 0:
+                        f.write(f"\nRR调度用户平均吞吐量统计:\n")
+                        f.write(f"- 总用户数: {len(user_avg_rr)}\n")
+                        f.write(f"- 平均吞吐量: {np.mean(user_avg_rr)/1e6:.2f} Mbps\n")
+                        f.write(f"- 中位数吞吐量: {np.median(user_avg_rr)/1e6:.2f} Mbps\n")
+                        f.write(f"- 标准差: {np.std(user_avg_rr)/1e6:.2f} Mbps\n")
+                        f.write(f"- 最小值: {min(user_avg_rr)/1e6:.2f} Mbps\n")
+                        f.write(f"- 最大值: {max(user_avg_rr)/1e6:.2f} Mbps\n")
+                        f.write(f"- 10%分位数: {np.percentile(user_avg_rr, 10)/1e6:.2f} Mbps\n")
+                        f.write(f"- 25%分位数: {np.percentile(user_avg_rr, 25)/1e6:.2f} Mbps\n")
+                        f.write(f"- 75%分位数: {np.percentile(user_avg_rr, 75)/1e6:.2f} Mbps\n")
+                        f.write(f"- 90%分位数: {np.percentile(user_avg_rr, 90)/1e6:.2f} Mbps\n")
+                    
+                    # 添加调度策略对比分析
+                    if len(user_avg_pf) > 0 and len(user_avg_rr) > 0:
+                        f.write(f"\n调度策略对比分析:\n")
+                        pf_mean = np.mean(user_avg_pf)/1e6
+                        rr_mean = np.mean(user_avg_rr)/1e6
+                        pf_median = np.median(user_avg_pf)/1e6
+                        rr_median = np.median(user_avg_rr)/1e6
+                        
+                        f.write(f"- PF vs RR 平均吞吐量比值: {pf_mean/rr_mean:.2f}\n")
+                        f.write(f"- PF vs RR 中位数吞吐量比值: {pf_median/rr_median:.2f}\n")
+                        f.write(f"- PF调度公平性指标(标准差/均值): {np.std(user_avg_pf)/np.mean(user_avg_pf):.3f}\n")
+                        f.write(f"- RR调度公平性指标(标准差/均值): {np.std(user_avg_rr)/np.mean(user_avg_rr):.3f}\n")
             
             f.write(f"\n生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         

@@ -113,7 +113,7 @@ class SatelliteAnalyzer:
                 break
         return same_plane, diff_plane
     
-    def get_positions_for_duration(self, satellite_indices, duration_minutes=10):
+    def get_positions_for_duration(self, satellite_indices, duration_minutes=30):
         """获取指定卫星在给定时间段内的位置数据
         Args:
             satellite_indices: 卫星索引列表
@@ -555,16 +555,22 @@ def main():
         print("  Nearest 20 satellites in different orbital planes (Right):")
         for sat in right_sats:
             print(f"    SAT-{sat} (Orbital Plane {analyzer.get_orbital_plane(sat)})")
-    # 合并所有目标卫星相关卫星索引，获取10分钟内位置数据
+    # 合并所有目标卫星相关卫星索引，获取30分钟内位置数据
     all_sats = set(target_sats)
     for v in same_plane_dict.values():
         all_sats.update(v)
     for v in diff_plane_dict.values():
         all_sats.update(v)
-    positions_df = analyzer.get_positions_for_duration(list(all_sats))
-    output_file = 'satellite_positions_10min.csv'
-    positions_df.to_csv(output_file, index=False)
-    print(f"\nPosition data saved to: {output_file}")
+    positions_df = analyzer.get_positions_for_duration(list(all_sats), duration_minutes=30)
+    output_xlsx = 'satellite_positions_30min.xlsx'
+    try:
+        positions_df.to_excel(output_xlsx, index=False)
+        print(f"\nPosition data saved to: {output_xlsx}")
+    except Exception as e:
+        # 若xlsx写入引擎不可用，则回退为CSV
+        output_csv = 'satellite_positions_30min.csv'
+        positions_df.to_csv(output_csv, index=False)
+        print(f"\nExcel export failed ({e}), fallback to CSV: {output_csv}")
     print("\nData Preview:")
     print(positions_df.head())
     print("\nPlotting three target satellites only...")
