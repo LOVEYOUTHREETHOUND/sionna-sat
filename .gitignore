@@ -61,3 +61,4 @@ results/html/
 satellite_sim/data/
 satellite_sim/simulation_results/
 *.png
+simulation_results/

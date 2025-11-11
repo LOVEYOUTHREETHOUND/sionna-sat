@@ -11,6 +11,35 @@ from concurrent.futures import ProcessPoolExecutor
 import pandas as pd
 from datetime import datetime
 
+# 添加进度条支持
+try:
+    from tqdm import tqdm
+except ImportError:
+    print("警告: 未安装tqdm库，将使用简单进度显示")
+    # 简单的进度条替代
+    class tqdm:
+        def __init__(self, iterable=None, total=None, desc="", **kwargs):
+            self.iterable = iterable
+            self.total = total or (len(iterable) if iterable else 0)
+            self.desc = desc
+            self.n = 0
+            print(f"{self.desc}: 开始")
+        
+        def __iter__(self):
+            for item in self.iterable:
+                yield item
+                self.update(1)
+            return self
+        
+        def update(self, n=1):
+            self.n += n
+            if self.total > 0:
+                progress = self.n / self.total * 100
+                print(f"\r{self.desc}: {progress:.1f}% ({self.n}/{self.total})", end="", flush=True)
+        
+        def close(self):
+            print(f"\n{self.desc}: 完成")
+
 class StaticData:
     def __init__(self, system_param_path, satellite_result_path, topology_json_dir, 
                  num_sats=1800, num_timesteps=None, 
@@ -88,10 +117,6 @@ class StaticData:
         # 计算波长 (米)
         wavelength = speed_of_light / carrier_freq
         all_params['wavelength'] = wavelength
-        print(f"\n波长计算:")
-        print(f"  光速: {speed_of_light} m/s")
-        print(f"  载波频率: {carrier_freq/1e9} GHz")
-        print(f"  波长: {wavelength*100:.2f} cm")
         
         # 设置天线直径（不再使用波束数计算）
         # 对于Ka波段卫星通信，天线直径通常在1-2米范围
@@ -101,9 +126,6 @@ class StaticData:
         # 计算ka参数
         ka = (2 * np.pi / wavelength) * (antenna_diameter / 2)
         all_params['ka'] = ka
-        print(f"\n天线参数:")
-        print(f"  天线直径: {antenna_diameter:.2f} m")
-        print(f"  ka参数: {ka:.2f}")
         
         # 设置接收天线增益（用户终端）
         all_params['receiver_gain'] = 25.0  # 设置为25dB，这是典型的用户终端天线增益
@@ -114,12 +136,6 @@ class StaticData:
         # 设置每个SC的总带宽和资源块数
         all_params['sc_bandwidth'] = 30e6  # 每个SC总带宽20MHz
         all_params['num_rbs'] = 150        # 每个SC 10个资源块
-        
-        # 验证参数合理性
-        if ka > 200:
-            print(f"\n警告: ka参数 ({ka:.2f}) 可能过大，这会导致过大的增益衰减")
-        if antenna_diameter > 3:
-            print(f"\n警告: 天线直径 ({antenna_diameter:.2f}m) 可能过大")
         
         return all_params
 
@@ -192,7 +208,6 @@ class StaticData:
                             current_sat_data = []
                             reading_data = False
                 except (ValueError, IndexError) as e:
-                    print(f"Warning: Skipping invalid line: {line}")
                     continue
         
         # 添加最后一个卫星的数据
@@ -349,7 +364,6 @@ class SimulateSnapshot:
         Teq = 10 ** ((receiver_gain - g_over_t) / 10)
         # 2. 计算噪声功率 N0 = k * Teq * B
         self.N0 = boltzmann_constant * Teq * bandwidth  # 单位：瓦
-        print('该用户噪声计算值为：', self.N0,'W')
         return self.N0
 
     def run_timeslots(self, num_timeslots):
@@ -398,17 +412,13 @@ class SimulateTimeslot:
             if num_sc == 0:
                 continue  # 该卫星没有关联的小区
                 
-            print(f"卫星 {sat}: 关联 {num_sc} 个小区，波束数 {self.beams_per_sat}")
-            
             if num_sc <= self.beams_per_sat:
                 # 情况1：关联小区数 <= 波束数，每个时隙服务所有小区
-                print(f"  策略：全量服务（小区数 <= 波束数）")
                 for b in range(min(num_sc, self.beams_per_sat)):
                     schedule[sat, b] = sc_indices[b]
                     
             else:
                 # 情况2：关联小区数 > 波束数，需要轮询服务
-                print(f"  策略：轮询服务（小区数 > 波束数）")
                 # 计算当前时隙应该服务的起始索引
                 # 每个时隙轮询50个小区，下一个时隙从第51个小区开始
                 start_idx = (self.timeslot_idx * self.beams_per_sat) % num_sc
@@ -416,40 +426,14 @@ class SimulateTimeslot:
                 for b in range(self.beams_per_sat):
                         sc_idx = (start_idx + b) % num_sc
                         schedule[sat, b] = sc_indices[sc_idx]
-                        print(f"  时隙 {self.timeslot_idx}: 服务小区 {start_idx} 到 {start_idx + self.beams_per_sat - 1} (循环)")
                     
             
         
         return schedule
     
     def _print_beam_schedule_info(self):
-        """打印当前时隙的波束调度信息"""
-        print(f"\n=== 时隙 {self.timeslot_idx} 波束调度信息 ===")
-        
-        for sat in range(self.num_sats):
-            # 获取该卫星关联的所有SC
-            sc_indices = np.where(self.association[:, sat] == 1)[0]
-            num_sc = len(sc_indices)
-            
-            if num_sc == 0:
-                continue
-                
-            # 获取当前时隙该卫星激活的波束
-            active_beams = self.beam_schedule[sat]
-            active_scs = active_beams[active_beams >= 0]
-            
-            print(f"卫星 {sat}:")
-            print(f"  关联小区数: {num_sc}")
-            print(f"  当前激活波束数: {len(active_scs)}")
-            print(f"  服务小区: {active_scs.tolist()}")
-            
-            if num_sc > self.beams_per_sat:
-                # 显示轮询进度
-                start_idx = (self.timeslot_idx * self.beams_per_sat) % num_sc
-                end_idx = (start_idx + self.beams_per_sat - 1) % num_sc
-                print(f"  轮询进度: {start_idx}-{end_idx} / {num_sc}")
-        
-        print("=" * 50)
+        """打印当前时隙的波束调度信息（已禁用详细输出）"""
+        pass
 
     def _precompute_noise(self):
         """预计算噪声功率"""
@@ -465,7 +449,6 @@ class SimulateTimeslot:
         
         # 2. 计算噪声功率 N0 = k * Teq * B
         N0 = boltzmann_constant * Teq * bandwidth * 0.1  # 单位：瓦
-        print('系统噪声功率计算值为：', N0, 'W')
         return N0
 
     def compute_received_power(self, sat_pos, user_pos, sc_center_pos):
@@ -477,29 +460,14 @@ class SimulateTimeslot:
         Returns:
             接收功率 (dBW)
         """
-        print("\n接收功率计算过程:")
-        print("1. 初始参数:")
-        print(f"  卫星位置 (ECEF): {sat_pos}")
-        print(f"  用户位置 (ECEF): {user_pos}")
-        print(f"  小区中心 (ECEF): {sc_center_pos}")
-        
         # 1. 获取预计算的EIRP
         EIRP = self.static_data.system_params['EIRP']  # dBW
-        print("\n2. EIRP计算:")
-        print(f"  EIRP密度: {self.static_data.system_params['eirp_density']} dBW/MHz")
-        print(f"  带宽: {self.static_data.system_params['bandwidth']/1e6} MHz")
-        print(f"  最终EIRP: {EIRP} dBW")
         
         # 2. 计算离轴角
         D_SC = sc_center_pos - sat_pos  # [3,]
         D_UE = user_pos - sat_pos  # [3,]
         cos_alpha = np.dot(D_SC, D_UE) / (np.linalg.norm(D_SC) * np.linalg.norm(D_UE))
         alpha = np.arccos(np.clip(cos_alpha, -1.0, 1.0))
-        print("\n3. 离轴角计算:")
-        print(f"  卫星到小区中心向量: {D_SC}")
-        print(f"  卫星到用户向量: {D_UE}")
-        print(f"  向量夹角余弦: {cos_alpha}")
-        print(f"  离轴角: {np.rad2deg(alpha):.2f} 度")
         
         # 3. 计算增益衰减
         ka = self.static_data.system_params['ka']
@@ -509,17 +477,9 @@ class SimulateTimeslot:
             x = ka * np.sin(alpha)
             from scipy.special import j1
             delta_G = 10 * np.log10(4 * (j1(x)/x)**2)  # dB
-        print("\n4. 增益衰减计算:")
-        print(f"  ka参数: {ka}")
-        if alpha != 0:
-            print(f"  x = ka * sin(alpha): {x}")
-            print(f"  贝塞尔函数值 j1(x)/x: {j1(x)/x}")
-        print(f"  增益衰减: {delta_G} dB")
         
         # 4. 接收天线增益
         G_R = float(self.static_data.system_params['receiver_gain'])  # dB
-        print("\n5. 接收天线增益:")
-        print(f"  G_R: {G_R} dB")
         
         # 5. 计算路径损耗
         d = np.linalg.norm(D_UE)  # 距离(m)
@@ -527,22 +487,11 @@ class SimulateTimeslot:
         L_s = float(self.static_data.system_params['scintillation_loss'])  # dB
         # 阴影衰落（对数正态，标准差2dB）
         F_s = np.random.normal(0, 2.0)  # dB
-        print(f"\n6. 路径损耗计算:")
-        print(f"  传播距离: {d/1000:.2f} km")
-        print(f"  载波频率: {f0} GHz")
-        print(f"  闪烁损耗: {L_s} dB")
-        print(f"  阴影衰落: {F_s:.2f} dB (sigma=2dB)")
         # TODO: 还未添加大气吸收损耗
         PL = 32.45 + 20 * np.log10(f0 * d) + F_s + L_s  # dB
-        print(f"  总路径损耗: {PL:.2f} dB")
         
         # 6. 计算总接收功率
         P_rx = EIRP + delta_G + G_R - PL  # dBW
-        print("\n7. 最终接收功率计算:")
-        print(f"  P_rx = EIRP + delta_G + G_R - PL")
-        print(f"  P_rx = {EIRP} + ({delta_G}) + {G_R} - {PL}")
-        print(f"  P_rx = {P_rx} dBW")
-        print(f"  P_rx = {10**(P_rx/10):.2e} W")
         return P_rx
 
     def compute_interference(self, user_idx):
@@ -662,22 +611,14 @@ class SimulateTimeslot:
         # 4. 为每个用户计算SINR
         sinr_all = np.full(self.num_users, float('-inf'))
         
-        print("\n开始计算每个用户的SINR:")
         for user_idx in range(self.num_users):
             # 获取用户的服务小区和服务卫星
             user_sc = self.static_data.user_sc_mapping[user_idx]
             serving_sat = np.where(self.interference_association[user_idx] == 2)[0][0]
             
-            print(f"\n用户 {user_idx}:")
-            print(f"  所属小区: SC-{user_sc}")
-            print(f"  服务卫星: SAT-{serving_sat}")
-            
             # 检查用户是否被调度
             if not beam_schedule_matrix[serving_sat, user_sc]:
-                print("  状态: 未被调度")
                 continue
-            
-            print("  状态: 已被调度")
             
             # 计算接收功率
             rx_power_db = self.compute_received_power(
@@ -686,14 +627,12 @@ class SimulateTimeslot:
                 self.static_data.sc_centers[user_sc]
             )
             rx_power = 10 ** (rx_power_db / 10)
-            print(f"  接收功率: {rx_power_db:.2f} dBW ({rx_power:.2e} W)")
             
             # 计算星内干扰
             intra_interference = 0
             active_sc_indices = np.where(beam_schedule_matrix[serving_sat])[0]
             active_sc_indices = active_sc_indices[active_sc_indices != user_sc]
             
-            print("  星内干扰:")
             if len(active_sc_indices) > 0:
                 for sc_idx in active_sc_indices:
                     interference_power_db = self.compute_received_power(
@@ -703,23 +642,16 @@ class SimulateTimeslot:
                     )
                     interference_power = 10 ** (interference_power_db / 10)
                     intra_interference += interference_power
-                    print(f"    - 来自SC-{sc_idx}: {interference_power_db:.2f} dBW ({interference_power:.2e} W)")
-            else:
-                print("    无星内干扰")
-            
-            print(f"    总星内干扰: {10*np.log10(intra_interference):.2f} dBW ({intra_interference:.2e} W)")
             
             # 计算星间干扰
             inter_interference = 0
             interfering_sats = np.where(self.interference_association[user_idx] == 1)[0]
             
-            print("  星间干扰:")
             if len(interfering_sats) > 0:
                 for sat_idx in interfering_sats:
                     active_sc_indices = np.where(beam_schedule_matrix[sat_idx])[0]
                     if len(active_sc_indices) > 0:
                         sat_total_interference = 0
-                        print(f"    来自SAT-{sat_idx}:")
                         for sc_idx in active_sc_indices:
                             interference_power_db = self.compute_received_power(
                                 sat_positions[sat_idx],
@@ -728,30 +660,15 @@ class SimulateTimeslot:
                             )
                             interference_power = 10 ** (interference_power_db / 10)
                             sat_total_interference += interference_power
-                            print(f"      - SC-{sc_idx}: {interference_power_db:.2f} dBW ({interference_power:.2e} W)")
                         inter_interference += sat_total_interference
-                        print(f"      小计: {10*np.log10(sat_total_interference):.2f} dBW ({sat_total_interference:.2e} W)")
-            else:
-                print("    无星间干扰")
-            
-            print(f"    总星间干扰: {10*np.log10(inter_interference):.2f} dBW ({inter_interference:.2e} W)")
-            
-            # 计算总干扰
-            total_interference = intra_interference + inter_interference
-            print(f"  总干扰功率: {10*np.log10(total_interference):.2f} dBW ({total_interference:.2e} W)")
-            print(f"  噪声功率: {10*np.log10(noise):.2f} dBW ({noise:.2e} W)")
             
             # 计算SINR
             # denominator = total_interference + noise
             denominator = noise
             if denominator > 0:
                 sinr = rx_power / denominator
-                print(f"sinr: {sinr}")
                 sinr_db = 10 * np.log10(sinr)
                 sinr_all[user_idx] = sinr_db
-                print(f"  SINR: {sinr_db:.2f} dB")
-            else:
-                print("  SINR: 无效 (分母为0)")
         
         return sinr_all
 
@@ -784,20 +701,50 @@ class SimulateTimeslot:
         allocation = {u: 0 for u in user_indices}
         if num_users == 0:
             return allocation
-        # 计算PF指标（instant_rate/avg_rate）
-        pf_metric = []
+        # 1. 初始化PF指标字典
+        #    为了在函数内部修改，我们创建一个可变副本
+        pf_metric_dict = {}
+        #    同时创建一个临时的平均速率字典，用于在时隙内更新
+        temp_avg_rate = {}
         for u in user_indices:
             avg = user_avg_rate.get(u, 1e-6)
             inst = instant_rate[u] if u < len(instant_rate) else 1e-6
-            pf_metric.append((u, inst / avg))
+            pf_metric_dict[u] = inst / avg
+            temp_avg_rate[u] = avg
+
+        # 2. 获取alpha值用于模拟更新
+        #    注意: 此处alpha值应与主循环中的值保持一致
+        alpha = 0.5
+
+        # 3. 逐个分配资源块 (RB)
         for rb in range(num_rbs):
-            pf_metric = sorted(pf_metric, key=lambda x: -x[1])
-            user = pf_metric[0][0]
-            allocation[user] += 1
-            # 分配后，用户的速率增加，需更新PF指标
-            inst = instant_rate[user] * allocation[user]  # 分配了N个RB，速率为N倍
-            avg = user_avg_rate.get(user, 1e-6)
-            pf_metric[0] = (user, inst / avg)
+            # 如果字典为空则退出
+            if not pf_metric_dict:
+                break
+            
+            # 3.1 找出当前PF指标最高的用户
+            user_to_allocate = max(pf_metric_dict, key=pf_metric_dict.get)
+            
+            # 3.2 分配一个RB给他
+            allocation[user_to_allocate] += 1
+            
+            # 3.3 【关键修改】重新计算该用户的PF指标
+            # 获取该用户的瞬时速率 (per RB)
+            user_inst_rate = instant_rate[user_to_allocate]
+            
+            # 使用EWMA公式模拟更新历史平均速率
+            # 这次更新只在当前时隙的调度决策中有效
+            current_avg = temp_avg_rate[user_to_allocate]
+            # 假设分配一个RB带来的吞吐量近似等于其瞬时速率
+            throughput_from_one_rb = user_inst_rate
+            new_avg = alpha * current_avg + (1 - alpha) * throughput_from_one_rb
+            
+            # 更新临时的平均速率
+            temp_avg_rate[user_to_allocate] = new_avg
+            
+            # 基于新的临时平均速率，重新计算并更新该用户的PF指标
+            pf_metric_dict[user_to_allocate] = user_inst_rate / new_avg
+
         return allocation
 
 
@@ -872,7 +819,13 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
     detail_records = []
     num_users = static_data.user_positions.shape[0]
     user_avg_rate_pf = {u: 1e-6 for u in range(num_users)}  # PF历史平均吞吐量
-    alpha = 0.9  # PF指数加权系数
+    alpha = 0.5 # PF指数加权系数
+    
+    # 添加进度条
+    total_slots = num_snapshots * slots_per_snapshot
+    pbar = tqdm(total=total_slots, desc=f"仿真进度 (用户组 {user_indices[0]}-{user_indices[-1]})", 
+                position=user_indices[0] // 100, leave=False)
+    
     for snapshot_idx in range(num_snapshots):
         snapshot_sim = SimulateSnapshot(static_data, snapshot_idx)
         for slot_idx in range(slots_per_snapshot):
@@ -1039,21 +992,27 @@ def simulate_user_range(user_indices, static_data_params, simulation_params):
                     'throughput_pf': throughput_pf
                 })
             all_sinr_results.append(sinr_results)
+            
+            # 更新进度条
+            pbar.update(1)
+    
+    pbar.close()
     return all_sinr_results, detail_records
 
 def main():
     import time
     start_time = time.time()
     
-    # 1. 配置仿真参数
-    system_param_path = 'config/system_params.json'
-    satellite_result_path = 'data/satellite_result/Satellite1_Fixed_Position_Velocity.txt'
-    topology_json_dir = 'data/topology_result/json'
+    # 1. 配置仿真参数 (使用相对于脚本自身的路径)
+    script_dir = os.path.dirname(__file__)
+    system_param_path = os.path.join(script_dir, 'config/system_params.json')
+    satellite_result_path = os.path.join(script_dir, 'data/satellite_result/Satellite1_Fixed_Position_Velocity.txt')
+    topology_json_dir = os.path.join(script_dir, 'data/topology_result/json')
     
     # 仿真范围配置
     num_sats = 500  # 随机选取500个卫星
     num_scs = 200   # 随机选取200个小区
-    simulation_time = 120  # 120秒
+    simulation_time = 60 #120秒
     snapshot_interval = 1  # 1秒一个snapshot
     timeslot_interval = 1  # 1秒一个timeslot
     # 计算snapshot和timeslot数量
@@ -1065,12 +1024,7 @@ def main():
     sat_indices = sorted(random.sample(range(total_sats), num_sats))
     sc_indices = sorted(random.sample(range(total_scs), num_scs))
     
-    print(f"开始仿真实验：")
-    print(f"- 卫星数量: {num_sats}")
-    print(f"- 小区数量: {num_scs}")
-    print(f"- 仿真时长: {simulation_time}秒")
-    print(f"- Snapshot间隔: {snapshot_interval}秒")
-    print(f"- Timeslot间隔: {timeslot_interval}秒")
+    print(f"开始仿真实验 - 卫星:{num_sats} 小区:{num_scs} 时长:{simulation_time}秒")
     
     # 2. 初始化StaticData（只为获取用户数）
     init_start = time.time()
@@ -1086,10 +1040,9 @@ def main():
     init_time = time.time() - init_start
     num_users = static_data.user_positions.shape[0]
     user_indices = np.arange(num_users)
-    user_ranges = np.array_split(user_indices, 8)
+    user_ranges = np.array_split(user_indices, 1)
     
-    print(f"- 用户数量: {num_users}")
-    print(f"- 数据初始化耗时: {init_time:.2f}秒")
+    print(f"用户数量: {num_users} | 初始化耗时: {init_time:.2f}秒")
     
 
 
@@ -1181,26 +1134,13 @@ def main():
     sinr_df.to_csv(sinr_file, index=False)
     detail_df.to_csv(detail_file, index=False)
     
-    print(f"SINR表格已保存: {sinr_file}")
-    print(f"详细过程表格已保存: {detail_file}")
-    
     save_time = time.time() - save_start
-    
-    # 7. 总计时
     total_time = time.time() - start_time
     
-    print("\n仿真完成！")
-    print(f"性能统计：")
-    print(f"- 数据初始化: {init_time:.2f}秒")
-    print(f"- 并行仿真计算: {sim_time:.2f}秒")
-    print(f"- 结果合并: {merge_time:.2f}秒")
-    print(f"- 结果保存: {save_time:.2f}秒")
-    print(f"- 总耗时: {total_time:.2f}秒")
-    print(f"- 平均每用户每时隙: {sim_time*1000/(num_users*num_snapshots*slots_per_snapshot):.2f}毫秒")
-    print(f"\n整体统计信息：")
-    print(f"- 平均SINR: {mean_sinr:.2f} dB")
-    print(f"- 最大SINR: {max_sinr:.2f} dB")
-    print(f"- 最小SINR: {min_sinr:.2f} dB")
+    print(f"\n仿真完成！")
+    print(f"总耗时: {total_time:.2f}秒 | 仿真: {sim_time:.2f}秒 | 平均SINR: {mean_sinr:.2f}dB")
+    print(f"结果已保存: {sinr_file}")
+    print(f"详细数据: {detail_file}")
     
     # TensorBoard日志已自动保存
 
